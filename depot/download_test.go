@@ -145,3 +145,82 @@ func TestDownloadSkipsUnchangedAndRemovesStale(t *testing.T) {
 		t.Fatal("store should hold the new manifest")
 	}
 }
+
+func TestDownloadResumesAfterInterruption(t *testing.T) {
+	f := newFakeCDN(t)
+	var parts [][]byte
+	var chunks []*cdn.Chunk
+	var offset uint64
+	for i := 0; i < 6; i++ {
+		p := bytes.Repeat([]byte{byte('a' + i)}, 200)
+		parts = append(parts, p)
+		chunks = append(chunks, f.chunk(t, p, offset))
+		offset += 200
+	}
+	file := &cdn.File{Name: "big.bin", Size: offset, Chunks: chunks}
+	m := &cdn.Manifest{GID: 77, Files: []*cdn.File{file}}
+	dir := t.TempDir()
+	store := &Store{Dir: filepath.Join(dir, ".state")}
+
+	// Fail every request after the third so the first run dies part way.
+	var served atomic.Int32
+	failing := f.srv.Config.Handler
+	f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if served.Add(1) > 3 {
+			w.WriteHeader(500)
+			return
+		}
+		failing.ServeHTTP(w, r)
+	})
+	client := f.client()
+	client.Retries = 1
+	client.Backoff = 1
+	opts := Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: m, Store: store, Concurrency: 1}
+	if err := Download(context.Background(), client, opts); err == nil {
+		t.Fatal("expected first run to fail")
+	}
+	j, err := store.Journal(1)
+	if err != nil || j == nil || j.GID != 77 || len(j.Done) != 3 {
+		t.Fatalf("journal after failure: %+v %v", j, err)
+	}
+
+	f.srv.Config.Handler = failing
+	f.hits.Store(0)
+	var last Progress
+	opts.OnProgress = func(p Progress) { last = p }
+	if err := Download(context.Background(), client, opts); err != nil {
+		t.Fatal(err)
+	}
+	if f.hits.Load() != 3 {
+		t.Fatalf("expected 3 fetches on resume, got %d", f.hits.Load())
+	}
+	if last.BytesSkipped != 600 {
+		t.Fatalf("expected 600 bytes skipped, got %+v", last)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "big.bin"))
+	if !bytes.Equal(got, bytes.Join(parts, nil)) {
+		t.Fatal("content mismatch after resume")
+	}
+	if j, _ := store.Journal(1); j != nil {
+		t.Fatal("journal should be cleared after success")
+	}
+
+	// A different manifest id must not resume from the old journal.
+	store.SaveJournal(1, &Journal{GID: 1, Done: j0(chunks)})
+	f.hits.Store(0)
+	m2 := &cdn.Manifest{GID: 78, Files: []*cdn.File{file}}
+	if err := Download(context.Background(), client, Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: m2, Store: store}); err != nil {
+		t.Fatal(err)
+	}
+	if f.hits.Load() != 6 {
+		t.Fatalf("expected full refetch with stale journal, got %d", f.hits.Load())
+	}
+}
+
+func j0(chunks []*cdn.Chunk) []string {
+	var out []string
+	for _, c := range chunks {
+		out = append(out, hex.EncodeToString(c.SHA))
+	}
+	return out
+}

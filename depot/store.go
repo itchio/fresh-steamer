@@ -59,3 +59,52 @@ func (s *Store) Forget(depotID uint32) error {
 	}
 	return err
 }
+
+// Journal records which chunks of an in-progress download have been fully
+// written, so an interrupted run can pick up where it stopped.
+type Journal struct {
+	GID  uint64   `json:"gid"`
+	Done []string `json:"done"` // hex chunk hashes
+}
+
+func (s *Store) journalPath(depotID uint32) string {
+	return filepath.Join(s.Dir, fmt.Sprintf("progress-%d.json", depotID))
+}
+
+func (s *Store) Journal(depotID uint32) (*Journal, error) {
+	data, err := os.ReadFile(s.journalPath(depotID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var j Journal
+	if err := json.Unmarshal(data, &j); err != nil {
+		return nil, nil
+	}
+	return &j, nil
+}
+
+func (s *Store) SaveJournal(depotID uint32, j *Journal) error {
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(j)
+	if err != nil {
+		return err
+	}
+	tmp := s.journalPath(depotID) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.journalPath(depotID))
+}
+
+func (s *Store) ClearJournal(depotID uint32) error {
+	err := os.Remove(s.journalPath(depotID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}

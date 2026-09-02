@@ -5,12 +5,14 @@ package depot
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/itchio/fresh-steamer/cdn"
 	"golang.org/x/sync/errgroup"
@@ -56,16 +58,29 @@ func Download(ctx context.Context, c *cdn.Client, opts Options) error {
 		}
 		opts.Previous = prev
 	}
-	if err := download(ctx, c, opts); err != nil {
+	var resume *Journal
+	if opts.Store != nil {
+		j, err := opts.Store.Journal(opts.DepotID)
+		if err != nil {
+			return err
+		}
+		if j != nil && j.GID == opts.Manifest.GID {
+			resume = j
+		}
+	}
+	if err := download(ctx, c, opts, resume); err != nil {
 		return err
 	}
 	if opts.Store != nil {
+		if err := opts.Store.ClearJournal(opts.DepotID); err != nil {
+			return err
+		}
 		return opts.Store.Save(opts.DepotID, opts.Manifest)
 	}
 	return nil
 }
 
-func download(ctx context.Context, c *cdn.Client, opts Options) error {
+func download(ctx context.Context, c *cdn.Client, opts Options, resume *Journal) error {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return err
 	}
@@ -117,6 +132,17 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 	var order []*work
 	pending := map[*cdn.File]int{}
 
+	// A resumed chunk counts only if every file it lands in was left as the
+	// interrupted run made it. Files that are missing or the wrong size get
+	// all their chunks fetched again.
+	done := map[string]bool{}
+	if resume != nil {
+		for _, h := range resume.Done {
+			done[h] = true
+		}
+	}
+	fresh := map[*cdn.File]bool{}
+
 	for _, f := range opts.Manifest.Files {
 		p := filepath.Join(opts.Dir, filepath.FromSlash(f.Name))
 		switch {
@@ -147,6 +173,10 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 			}
 		}
 
+		if resume != nil {
+			st, err := os.Stat(p)
+			fresh[f] = err != nil || !st.Mode().IsRegular() || uint64(st.Size()) != f.Size
+		}
 		if err := createFile(p, f); err != nil {
 			return err
 		}
@@ -166,11 +196,64 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 			w.targets = append(w.targets, target{path: p, offset: ch.Offset, file: f})
 		}
 	}
+	journal := &Journal{GID: opts.Manifest.GID}
+	var todo []*work
+	for _, w := range order {
+		skip := done[hex.EncodeToString(w.chunk.SHA)]
+		for _, t := range w.targets {
+			if fresh[t.file] {
+				skip = false
+			}
+		}
+		if skip {
+			journal.Done = append(journal.Done, hex.EncodeToString(w.chunk.SHA))
+			for _, t := range w.targets {
+				prog.BytesDone += uint64(w.chunk.Size)
+				prog.BytesSkipped += uint64(w.chunk.Size)
+				pending[t.file]--
+				if pending[t.file] == 0 {
+					prog.FilesDone++
+				}
+			}
+			continue
+		}
+		todo = append(todo, w)
+	}
 	report()
+
+	// The journal is flushed on a timer rather than per chunk so a big
+	// depot does not turn into thousands of tiny writes.
+	var journalMu sync.Mutex
+	flush := func() {
+		if opts.Store == nil {
+			return
+		}
+		journalMu.Lock()
+		snapshot := &Journal{GID: journal.GID, Done: append([]string(nil), journal.Done...)}
+		journalMu.Unlock()
+		if err := opts.Store.SaveJournal(opts.DepotID, snapshot); err != nil {
+			opts.Logf("depot: saving progress journal: %v", err)
+		}
+	}
+	stopFlush := make(chan struct{})
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopFlush:
+				return
+			case <-t.C:
+				flush()
+			}
+		}
+	}()
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(opts.Concurrency)
-	for _, w := range order {
+	for _, w := range todo {
 		w := w
 		g.Go(func() error {
 			data, err := c.FetchChunk(ctx, opts.DepotID, w.chunk, opts.DepotKey)
@@ -182,6 +265,9 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 					return fmt.Errorf("%s: %w", t.file.Name, err)
 				}
 			}
+			journalMu.Lock()
+			journal.Done = append(journal.Done, hex.EncodeToString(w.chunk.SHA))
+			journalMu.Unlock()
 			mu.Lock()
 			for _, t := range w.targets {
 				prog.BytesDone += uint64(len(data))
@@ -195,7 +281,14 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 			return nil
 		})
 	}
-	return g.Wait()
+	err := g.Wait()
+	close(stopFlush)
+	<-flushDone
+	if err != nil {
+		// Leave the journal behind so the next run resumes.
+		flush()
+	}
+	return err
 }
 
 func createFile(path string, f *cdn.File) error {
@@ -206,7 +299,9 @@ func createFile(path string, f *cdn.File) error {
 	if f.IsExecutable() {
 		mode = 0o755
 	}
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	// No O_TRUNC: on resume the existing bytes are what we are keeping, and
+	// otherwise every byte gets rewritten by a chunk anyway.
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
