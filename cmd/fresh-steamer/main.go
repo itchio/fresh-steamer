@@ -297,6 +297,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 	stateDir := filepath.Join(*dir, ".fresh-steamer")
 	prev := loadPrevious(stateDir, d.ID)
 
+	var last depot.Progress
 	err = depot.Download(ctx, cdnClient, depot.Options{
 		Dir:      *dir,
 		DepotID:  d.ID,
@@ -304,6 +305,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 		Manifest: manifest,
 		Previous: prev,
 		OnProgress: func(p depot.Progress) {
+			last = p
 			if p.BytesTotal > 0 {
 				fmt.Fprintf(os.Stderr, "\r%d/%d files, %.1f%%", p.FilesDone, p.FilesTotal, float64(p.BytesDone)*100/float64(p.BytesTotal))
 			}
@@ -313,6 +315,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "done, %d bytes skipped as unchanged\n", last.BytesSkipped)
 	return savePrevious(stateDir, d.ID, manifest)
 }
 

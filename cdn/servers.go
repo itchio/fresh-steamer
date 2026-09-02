@@ -71,8 +71,9 @@ func Servers(ctx context.Context, api *webapi.Client, cellID uint32, max uint32)
 type Client struct {
 	HTTP    *http.Client
 	Servers []Server
+	Logf    func(format string, args ...any)
 }
 
 func NewClient(servers []Server) *Client {
-	return &Client{HTTP: http.DefaultClient, Servers: servers}
+	return &Client{HTTP: http.DefaultClient, Servers: servers, Logf: func(string, ...any) {}}
 }

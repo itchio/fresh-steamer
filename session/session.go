@@ -145,6 +145,7 @@ func (s *Session) CDN(ctx context.Context) (*cdn.Client, error) {
 		return nil, err
 	}
 	s.cdnClient = cdn.NewClient(servers)
+	s.cdnClient.Logf = s.Logf
 	return s.cdnClient, nil
 }
 

@@ -23,6 +23,9 @@ func (c *Client) FetchChunk(ctx context.Context, depotID uint32, chunk *Chunk, d
 		return nil, fmt.Errorf("fetching chunk %x: %w", chunk.SHA[:4], err)
 	}
 	data, err := DecodeChunk(raw, depotKey)
+	if c.Logf != nil && err == nil {
+		c.Logf("cdn: chunk %x %s %d -> %d bytes", chunk.SHA[:4], compressionName(raw, depotKey), len(raw), len(data))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("decoding chunk %x: %w", chunk.SHA[:4], err)
 	}
@@ -33,6 +36,22 @@ func (c *Client) FetchChunk(ctx context.Context, depotID uint32, chunk *Chunk, d
 		return nil, fmt.Errorf("chunk %x: checksum mismatch", chunk.SHA[:4])
 	}
 	return data, nil
+}
+
+func compressionName(raw, key []byte) string {
+	plain, err := steamcrypto.SymmetricDecrypt(raw, key)
+	if err != nil || len(plain) < 3 {
+		return "?"
+	}
+	switch {
+	case plain[0] == 'V' && plain[1] == 'S' && plain[2] == 'Z':
+		return "vzstd"
+	case plain[0] == 'V' && plain[1] == 'Z':
+		return "vzip"
+	case plain[0] == 'P' && plain[1] == 'K':
+		return "zip"
+	}
+	return "?"
 }
 
 // DecodeChunk decrypts and decompresses a raw chunk body.
@@ -86,14 +105,20 @@ func decompressVZip(b []byte) ([]byte, error) {
 	return out, nil
 }
 
-// VZstd: "VSZa" then a zstd frame then a 12 byte footer of crc32, size
-// and a trailing magic.
+// VZstd: "VSZa" and a crc32 make an 8 byte header, then a zstd frame, then
+// a 15 byte footer of crc32, uncompressed size, 4 zero bytes and "zsv".
 func decompressVZstd(b []byte) ([]byte, error) {
-	const header, footer = 4, 12
+	const header, footer = 8, 15
 	if len(b) < header+footer {
 		return nil, errors.New("vzstd: too short")
 	}
-	size := binary.LittleEndian.Uint32(b[len(b)-8:])
+	if b[3] != 'a' {
+		return nil, fmt.Errorf("vzstd: unsupported version %q", b[3])
+	}
+	if !bytes.HasSuffix(b, []byte("zsv")) {
+		return nil, errors.New("vzstd: bad footer")
+	}
+	size := binary.LittleEndian.Uint32(b[len(b)-11:])
 	dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		return nil, err
@@ -102,6 +127,9 @@ func decompressVZstd(b []byte) ([]byte, error) {
 	out, err := dec.DecodeAll(b[header:len(b)-footer], make([]byte, 0, size))
 	if err != nil {
 		return nil, fmt.Errorf("vzstd: %w", err)
+	}
+	if uint32(len(out)) != size {
+		return nil, fmt.Errorf("vzstd: footer says %d bytes, got %d", size, len(out))
 	}
 	return out, nil
 }
