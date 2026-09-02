@@ -120,11 +120,7 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 				return err
 			}
 			os.Remove(p)
-			target := f.LinkTarget
-			if runtime.GOOS != "windows" {
-				target = strings.ReplaceAll(target, "\\", "/")
-			}
-			if err := os.Symlink(target, p); err != nil {
+			if err := os.Symlink(filepath.FromSlash(f.LinkTarget), p); err != nil {
 				return fmt.Errorf("creating symlink %s: %w", f.Name, err)
 			}
 			mu.Lock()

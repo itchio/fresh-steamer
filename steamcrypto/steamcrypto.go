@@ -69,3 +69,25 @@ func Adler(data []byte) uint32 {
 	}
 	return a | b<<16
 }
+
+// SymmetricEncrypt is the inverse of SymmetricDecrypt. Steam never needs
+// it from a client; it exists so tests can build realistic chunks.
+func SymmetricEncrypt(plain, key, iv []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(iv) != 16 {
+		return nil, errors.New("steamcrypto: iv must be 16 bytes")
+	}
+	n := 16 - len(plain)%16
+	padded := make([]byte, 0, len(plain)+n)
+	padded = append(padded, plain...)
+	for i := 0; i < n; i++ {
+		padded = append(padded, byte(n))
+	}
+	out := make([]byte, 16+len(padded))
+	block.Encrypt(out[:16], iv)
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(out[16:], padded)
+	return out, nil
+}

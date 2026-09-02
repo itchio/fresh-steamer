@@ -232,6 +232,7 @@ func decryptName(enc string, key []byte) (string, error) {
 func (m *Manifest) normalizeNames() {
 	for _, f := range m.Files {
 		f.Name = strings.ReplaceAll(f.Name, "\\", "/")
+		f.LinkTarget = strings.ReplaceAll(f.LinkTarget, "\\", "/")
 	}
 }
 
