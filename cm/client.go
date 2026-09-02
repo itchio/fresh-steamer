@@ -42,6 +42,7 @@ const (
 	EMsgClientLogOff                = 706
 	EMsgClientLogOnResponse         = 751
 	EMsgClientLoggedOff             = 757
+	EMsgClientLicenseList           = 780
 	EMsgClientLogon                 = 5514
 )
 
@@ -76,9 +77,13 @@ type Client struct {
 	sessionID atomic.Int32
 	jobID     atomic.Uint64
 
-	mu      sync.Mutex
-	jobs    map[uint64]chan *Packet
-	byEMsg  map[uint32]chan *Packet
+	mu     sync.Mutex
+	jobs   map[uint64]chan *Packet
+	byEMsg map[uint32]chan *Packet
+	// stash keeps the last unsolicited packet per EMsg so callers can pick
+	// up things Steam pushes on its own schedule, like the license list.
+	stash   map[uint32]*Packet
+	stashed chan struct{}
 	closed  chan struct{}
 	closeMu sync.Once
 	err     error
@@ -118,11 +123,13 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 	conn.SetReadLimit(64 << 20)
 
 	c := &Client{
-		conn:   conn,
-		jobs:   map[uint64]chan *Packet{},
-		byEMsg: map[uint32]chan *Packet{},
-		closed: make(chan struct{}),
-		Logf:   opts.Logf,
+		conn:    conn,
+		jobs:    map[uint64]chan *Packet{},
+		byEMsg:  map[uint32]chan *Packet{},
+		stash:   map[uint32]*Packet{},
+		stashed: make(chan struct{}),
+		closed:  make(chan struct{}),
+		Logf:    opts.Logf,
 	}
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
@@ -450,7 +457,32 @@ func (c *Client) dispatch(pkt *Packet) {
 		}
 		return
 	}
-	c.Logf("cm: unhandled emsg %d", pkt.EMsg)
+	c.mu.Lock()
+	c.stash[pkt.EMsg] = pkt
+	close(c.stashed)
+	c.stashed = make(chan struct{})
+	c.mu.Unlock()
+}
+
+// WaitEMsg returns the most recent unsolicited packet with the given EMsg,
+// blocking until one arrives.
+func (c *Client) WaitEMsg(ctx context.Context, emsg uint32) (*Packet, error) {
+	for {
+		c.mu.Lock()
+		pkt, ok := c.stash[emsg]
+		wake := c.stashed
+		c.mu.Unlock()
+		if ok {
+			return pkt, nil
+		}
+		select {
+		case <-wake:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.closed:
+			return nil, c.Err()
+		}
+	}
 }
 
 func (c *Client) handleMulti(pkt *Packet) {
