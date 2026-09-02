@@ -1,0 +1,147 @@
+package depot
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/itchio/fresh-steamer/cdn"
+	"github.com/itchio/fresh-steamer/steamcrypto"
+)
+
+var testKey = bytes.Repeat([]byte{0x11}, 32)
+
+// fakeCDN serves encrypted zip-framed chunks by sha and counts requests.
+type fakeCDN struct {
+	chunks map[string][]byte
+	hits   atomic.Int32
+	srv    *httptest.Server
+}
+
+func newFakeCDN(t *testing.T) *fakeCDN {
+	f := &fakeCDN{chunks: map[string][]byte{}}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.hits.Add(1)
+		parts := strings.Split(r.URL.Path, "/")
+		body, ok := f.chunks[parts[len(parts)-1]]
+		if !ok {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write(body)
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeCDN) client() *cdn.Client {
+	return cdn.NewClient([]cdn.Server{{Host: strings.TrimPrefix(f.srv.URL, "http://")}})
+}
+
+func (f *fakeCDN) chunk(t *testing.T, plain []byte, offset uint64) *cdn.Chunk {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fw, _ := zw.Create("z")
+	fw.Write(plain)
+	zw.Close()
+	enc, err := steamcrypto.SymmetricEncrypt(buf.Bytes(), testKey, bytes.Repeat([]byte{2}, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha1.Sum(plain)
+	f.chunks[hex.EncodeToString(sum[:])] = enc
+	return &cdn.Chunk{SHA: sum[:], Checksum: steamcrypto.Adler(plain), Offset: offset, Size: uint32(len(plain))}
+}
+
+func TestDownloadDedupesChunks(t *testing.T) {
+	f := newFakeCDN(t)
+	shared := bytes.Repeat([]byte("shared"), 100)
+	unique := bytes.Repeat([]byte("unique"), 50)
+
+	// a.bin is shared+unique, b.bin is shared+shared: three chunk slots but
+	// only two distinct chunks.
+	a := &cdn.File{Name: "dir/a.bin", Size: uint64(len(shared) + len(unique)), Chunks: []*cdn.Chunk{
+		f.chunk(t, shared, 0), f.chunk(t, unique, uint64(len(shared))),
+	}}
+	b := &cdn.File{Name: "b.bin", Size: uint64(2 * len(shared)), Flags: cdn.FlagExecutable, Chunks: []*cdn.Chunk{
+		f.chunk(t, shared, 0), f.chunk(t, shared, uint64(len(shared))),
+	}}
+	m := &cdn.Manifest{Files: []*cdn.File{
+		{Name: "dir", Flags: cdn.FlagDirectory},
+		a, b,
+		{Name: "empty.txt"},
+	}}
+
+	dir := t.TempDir()
+	var last Progress
+	err := Download(context.Background(), f.client(), Options{
+		Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: m,
+		OnProgress: func(p Progress) { last = p },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.hits.Load(); got != 2 {
+		t.Fatalf("expected 2 chunk fetches, got %d", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "dir/a.bin")); !bytes.Equal(got, append(append([]byte{}, shared...), unique...)) {
+		t.Fatal("a.bin content mismatch")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "b.bin")); !bytes.Equal(got, append(append([]byte{}, shared...), shared...)) {
+		t.Fatal("b.bin content mismatch")
+	}
+	if st, _ := os.Stat(filepath.Join(dir, "b.bin")); st.Mode()&0o111 == 0 {
+		t.Fatal("b.bin should be executable")
+	}
+	if st, _ := os.Stat(filepath.Join(dir, "empty.txt")); st.Size() != 0 {
+		t.Fatal("empty.txt should exist and be empty")
+	}
+	if last.FilesDone != 4 || last.BytesDone != last.BytesTotal {
+		t.Fatalf("progress: %+v", last)
+	}
+}
+
+func TestDownloadSkipsUnchangedAndRemovesStale(t *testing.T) {
+	f := newFakeCDN(t)
+	data := bytes.Repeat([]byte("x"), 300)
+	sum := sha1.Sum(data)
+	file := &cdn.File{Name: "keep.bin", Size: 300, SHAContent: sum[:], Chunks: []*cdn.Chunk{f.chunk(t, data, 0)}}
+	old := &cdn.Manifest{Files: []*cdn.File{file, {Name: "gone.bin", Size: 1}}}
+	dir := t.TempDir()
+	store := &Store{Dir: filepath.Join(dir, ".state")}
+
+	if err := Download(context.Background(), f.client(), Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: old, Store: store}); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "gone.bin"), []byte("z"), 0o644)
+	f.hits.Store(0)
+
+	next := &cdn.Manifest{Files: []*cdn.File{file}}
+	var last Progress
+	err := Download(context.Background(), f.client(), Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: next, Store: store,
+		OnProgress: func(p Progress) { last = p }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.hits.Load() != 0 {
+		t.Fatalf("expected no fetches, got %d", f.hits.Load())
+	}
+	if last.BytesSkipped != 300 {
+		t.Fatalf("skipped: %+v", last)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gone.bin")); !os.IsNotExist(err) {
+		t.Fatal("stale file should be removed")
+	}
+	if prev, _ := store.Previous(1); prev == nil || len(prev.Files) != 1 {
+		t.Fatal("store should hold the new manifest")
+	}
+}

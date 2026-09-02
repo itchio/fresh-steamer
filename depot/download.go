@@ -79,31 +79,43 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 
 	var mu sync.Mutex
 	prog := Progress{}
-	var todo []*cdn.File
-	for _, f := range opts.Manifest.Files {
-		if err := checkName(f.Name); err != nil {
-			return err
-		}
-		delete(prev, f.Name)
-		prog.FilesTotal++
-		if f.IsDir() || f.IsSymlink() {
-			continue
-		}
-		prog.BytesTotal += f.Size
-		todo = append(todo, f)
-	}
 	report := func() {
 		if opts.OnProgress != nil {
 			opts.OnProgress(prog)
 		}
 	}
 
+	for _, f := range opts.Manifest.Files {
+		if err := checkName(f.Name); err != nil {
+			return err
+		}
+		delete(prev, f.Name)
+		prog.FilesTotal++
+		if !f.IsDir() && !f.IsSymlink() {
+			prog.BytesTotal += f.Size
+		}
+	}
 	for name := range prev {
 		p := filepath.Join(opts.Dir, filepath.FromSlash(name))
 		if err := os.RemoveAll(p); err != nil {
 			return fmt.Errorf("removing stale %s: %w", name, err)
 		}
 	}
+
+	// Same chunk contents can appear in several files or several times in
+	// one file. Fetch each distinct chunk once and write it everywhere.
+	type target struct {
+		path   string
+		offset uint64
+		file   *cdn.File
+	}
+	type work struct {
+		chunk   *cdn.Chunk
+		targets []target
+	}
+	byChunk := map[string]*work{}
+	var order []*work
+	pending := map[*cdn.File]int{}
 
 	for _, f := range opts.Manifest.Files {
 		p := filepath.Join(opts.Dir, filepath.FromSlash(f.Name))
@@ -112,9 +124,8 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 			if err := os.MkdirAll(p, 0o755); err != nil {
 				return err
 			}
-			mu.Lock()
 			prog.FilesDone++
-			mu.Unlock()
+			continue
 		case f.IsSymlink():
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return err
@@ -123,40 +134,62 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 			if err := os.Symlink(filepath.FromSlash(f.LinkTarget), p); err != nil {
 				return fmt.Errorf("creating symlink %s: %w", f.Name, err)
 			}
-			mu.Lock()
 			prog.FilesDone++
-			mu.Unlock()
+			continue
+		}
+
+		if old, ok := unchanged(opts.Previous, f); ok {
+			if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && uint64(st.Size()) == old.Size {
+				prog.FilesDone++
+				prog.BytesDone += f.Size
+				prog.BytesSkipped += f.Size
+				continue
+			}
+		}
+
+		if err := createFile(p, f); err != nil {
+			return err
+		}
+		if len(f.Chunks) == 0 {
+			prog.FilesDone++
+			continue
+		}
+		pending[f] = len(f.Chunks)
+		for _, ch := range f.Chunks {
+			key := string(ch.SHA)
+			w := byChunk[key]
+			if w == nil {
+				w = &work{chunk: ch}
+				byChunk[key] = w
+				order = append(order, w)
+			}
+			w.targets = append(w.targets, target{path: p, offset: ch.Offset, file: f})
 		}
 	}
 	report()
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(opts.Concurrency)
-	for _, f := range todo {
-		f := f
-		p := filepath.Join(opts.Dir, filepath.FromSlash(f.Name))
-		if old, ok := unchanged(opts.Previous, f); ok {
-			if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && uint64(st.Size()) == old.Size {
-				mu.Lock()
-				prog.FilesDone++
-				prog.BytesDone += f.Size
-				prog.BytesSkipped += f.Size
-				mu.Unlock()
-				report()
-				continue
-			}
-		}
+	for _, w := range order {
+		w := w
 		g.Go(func() error {
-			if err := writeFile(ctx, c, opts, f, p, func(n uint64) {
-				mu.Lock()
-				prog.BytesDone += n
-				mu.Unlock()
-				report()
-			}); err != nil {
-				return err
+			data, err := c.FetchChunk(ctx, opts.DepotID, w.chunk, opts.DepotKey)
+			if err != nil {
+				return fmt.Errorf("%s: %w", w.targets[0].file.Name, err)
+			}
+			for _, t := range w.targets {
+				if err := writeAt(t.path, data, t.offset); err != nil {
+					return fmt.Errorf("%s: %w", t.file.Name, err)
+				}
 			}
 			mu.Lock()
-			prog.FilesDone++
+			for _, t := range w.targets {
+				prog.BytesDone += uint64(len(data))
+				pending[t.file]--
+				if pending[t.file] == 0 {
+					prog.FilesDone++
+				}
+			}
 			mu.Unlock()
 			report()
 			return nil
@@ -165,19 +198,7 @@ func download(ctx context.Context, c *cdn.Client, opts Options) error {
 	return g.Wait()
 }
 
-func unchanged(previous *cdn.Manifest, f *cdn.File) (*cdn.File, bool) {
-	if previous == nil || len(f.SHAContent) == 0 {
-		return nil, false
-	}
-	for _, old := range previous.Files {
-		if old.Name == f.Name {
-			return old, bytes.Equal(old.SHAContent, f.SHAContent) && old.Size == f.Size
-		}
-	}
-	return nil, false
-}
-
-func writeFile(ctx context.Context, c *cdn.Client, opts Options, f *cdn.File, path string, advance func(uint64)) error {
+func createFile(path string, f *cdn.File) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -196,17 +217,29 @@ func writeFile(ctx context.Context, c *cdn.Client, opts Options, f *cdn.File, pa
 	if err := fh.Chmod(mode); err != nil && runtime.GOOS != "windows" {
 		return err
 	}
-	for _, ch := range f.Chunks {
-		data, err := c.FetchChunk(ctx, opts.DepotID, ch, opts.DepotKey)
-		if err != nil {
-			return fmt.Errorf("%s: %w", f.Name, err)
-		}
-		if _, err := fh.WriteAt(data, int64(ch.Offset)); err != nil {
-			return fmt.Errorf("%s: %w", f.Name, err)
-		}
-		advance(uint64(len(data)))
-	}
 	return nil
+}
+
+func writeAt(path string, data []byte, offset uint64) error {
+	fh, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.WriteAt(data, int64(offset))
+	return err
+}
+
+func unchanged(previous *cdn.Manifest, f *cdn.File) (*cdn.File, bool) {
+	if previous == nil || len(f.SHAContent) == 0 {
+		return nil, false
+	}
+	for _, old := range previous.Files {
+		if old.Name == f.Name {
+			return old, bytes.Equal(old.SHAContent, f.SHAContent) && old.Size == f.Size
+		}
+	}
+	return nil, false
 }
 
 // checkName rejects paths that would escape the output directory.
