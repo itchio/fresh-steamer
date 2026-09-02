@@ -12,13 +12,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/itchio/fresh-steamer/auth"
 	"github.com/itchio/fresh-steamer/cdn"
 	"github.com/itchio/fresh-steamer/depot"
+	"github.com/itchio/fresh-steamer/partner"
 	"github.com/itchio/fresh-steamer/session"
 	"golang.org/x/term"
 )
@@ -27,6 +30,7 @@ type creds struct {
 	AccountName  string            `json:"account_name"`
 	SteamID      uint64            `json:"steam_id"`
 	RefreshToken string            `json:"refresh_token"`
+	PublisherKey string            `json:"publisher_key,omitempty"`
 	DepotKeys    map[string]string `json:"depot_keys,omitempty"`
 }
 
@@ -42,6 +46,24 @@ func loadCreds() (*creds, error) {
 	data, err := os.ReadFile(credsPath())
 	if err != nil {
 		return nil, fmt.Errorf("not logged in, run `fresh-steamer login` first (%w)", err)
+	}
+	var c creds
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	if c.RefreshToken == "" {
+		return nil, fmt.Errorf("not logged in, run `fresh-steamer login` first")
+	}
+	return &c, nil
+}
+
+func loadCredsOptional() (*creds, error) {
+	data, err := os.ReadFile(credsPath())
+	if os.IsNotExist(err) {
+		return &creds{}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	var c creds
 	if err := json.Unmarshal(data, &c); err != nil {
@@ -75,6 +97,12 @@ func main() {
 		err = cmdLogin(ctx, os.Args[2:])
 	case "logout":
 		err = os.Remove(credsPath())
+	case "partner-key":
+		err = cmdPartnerKey(ctx)
+	case "apps":
+		err = cmdApps(ctx)
+	case "builds":
+		err = cmdBuilds(ctx, os.Args[2:])
 	case "info":
 		err = cmdInfo(ctx, os.Args[2:])
 	case "download":
@@ -92,6 +120,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   fresh-steamer login [-user NAME]
   fresh-steamer logout
+  fresh-steamer partner-key
+  fresh-steamer apps
+  fresh-steamer builds APPID
   fresh-steamer info APPID
   fresh-steamer download -app APPID -depot DEPOTID [-branch public] [-password PW] -dir DIR`)
 	os.Exit(2)
@@ -143,7 +174,14 @@ func cmdLogin(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := saveCreds(&creds{AccountName: c.AccountName, SteamID: c.SteamID, RefreshToken: c.RefreshToken}); err != nil {
+	existing, err := loadCredsOptional()
+	if err != nil {
+		return err
+	}
+	existing.AccountName = c.AccountName
+	existing.SteamID = c.SteamID
+	existing.RefreshToken = c.RefreshToken
+	if err := saveCreds(existing); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Logged in as %s, credentials saved to %s\n", c.AccountName, credsPath())
@@ -186,12 +224,121 @@ func saveKeys(s *session.Session, c *creds) {
 	_ = saveCreds(c)
 }
 
+// partnerClient needs a stored publisher key. Every command that touches an
+// app goes through it so the tool only ever works on apps the developer
+// controls, not anything the Steam account merely owns.
+func partnerClient() (*partner.Client, error) {
+	c, err := loadCredsOptional()
+	if err != nil {
+		return nil, err
+	}
+	if c.PublisherKey == "" {
+		return nil, fmt.Errorf("no publisher key stored, run `fresh-steamer partner-key` first")
+	}
+	return partner.NewClient(c.PublisherKey), nil
+}
+
+func requirePartnerApp(ctx context.Context, appID uint32) error {
+	// Development escape hatch for exercising the download path against a
+	// game the account merely owns. Butler must never expose this.
+	if os.Getenv("FRESH_STEAMER_UNGATED") != "" {
+		fmt.Fprintln(os.Stderr, "WARNING: FRESH_STEAMER_UNGATED set, skipping publisher key check")
+		return nil
+	}
+	pc, err := partnerClient()
+	if err != nil {
+		return err
+	}
+	ok, err := pc.HasApp(ctx, appID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("app %d is not one of the apps your publisher key controls, see `fresh-steamer apps`", appID)
+	}
+	return nil
+}
+
+func cmdPartnerKey(ctx context.Context) error {
+	fmt.Fprintln(os.Stderr, "Create a publisher Web API key at https://partner.steamgames.com/pub/groups/ under your publisher group.")
+	key, err := prompt("Publisher Web API key: ", true)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		return fmt.Errorf("empty key")
+	}
+	pc := partner.NewClient(key)
+	apps, err := pc.Apps(ctx)
+	if err != nil {
+		return err
+	}
+	c, err := loadCredsOptional()
+	if err != nil {
+		return err
+	}
+	c.PublisherKey = key
+	if err := saveCreds(c); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Key verified, %d apps accessible. Saved to %s\n", len(apps), credsPath())
+	return nil
+}
+
+func cmdApps(ctx context.Context) error {
+	pc, err := partnerClient()
+	if err != nil {
+		return err
+	}
+	apps, err := pc.Apps(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range apps {
+		fmt.Printf("%-10d %-12s %s\n", a.ID, a.Type, a.Name)
+	}
+	return nil
+}
+
+func cmdBuilds(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		usage()
+	}
+	appID, err := strconv.ParseUint(args[0], 10, 32)
+	if err != nil {
+		return err
+	}
+	pc, err := partnerClient()
+	if err != nil {
+		return err
+	}
+	builds, err := pc.Builds(ctx, uint32(appID), 20)
+	if err != nil {
+		return err
+	}
+	for _, b := range builds {
+		fmt.Printf("build %d  %s  %s\n", b.ID, time.Unix(b.CreatedAt, 0).Format("2006-01-02 15:04"), b.Description)
+		ids := make([]uint32, 0, len(b.Depots))
+		for id := range b.Depots {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		for _, id := range ids {
+			fmt.Printf("    depot %d manifest %d\n", id, b.Depots[id])
+		}
+	}
+	return nil
+}
+
 func cmdInfo(ctx context.Context, args []string) error {
 	if len(args) < 1 {
 		usage()
 	}
 	appID, err := strconv.ParseUint(args[0], 10, 32)
 	if err != nil {
+		return err
+	}
+	if err := requirePartnerApp(ctx, uint32(appID)); err != nil {
 		return err
 	}
 	s, _, err := openSession(ctx)
@@ -252,6 +399,9 @@ func cmdDownload(ctx context.Context, args []string) error {
 	fs.Parse(args)
 	if *appID == 0 || *depotID == 0 || *dir == "" {
 		usage()
+	}
+	if err := requirePartnerApp(ctx, uint32(*appID)); err != nil {
+		return err
 	}
 
 	s, c, err := openSession(ctx)
