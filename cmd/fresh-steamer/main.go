@@ -23,6 +23,7 @@ import (
 	"github.com/itchio/fresh-steamer/depot"
 	"github.com/itchio/fresh-steamer/partner"
 	"github.com/itchio/fresh-steamer/session"
+	"github.com/mdp/qrterminal/v3"
 	"golang.org/x/term"
 )
 
@@ -118,7 +119,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  fresh-steamer login [-user NAME]
+  fresh-steamer login [-password] [-user NAME]
   fresh-steamer logout
   fresh-steamer partner-key
   fresh-steamer apps
@@ -141,36 +142,17 @@ func prompt(label string, secret bool) (string, error) {
 
 func cmdLogin(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	user := fs.String("user", "", "account name")
+	user := fs.String("user", "", "account name, password flow only")
+	usePassword := fs.Bool("password", false, "log in with account name and password instead of scanning a QR code")
 	fs.Parse(args)
 
-	name := *user
+	var c *auth.Credentials
 	var err error
-	if name == "" {
-		if name, err = prompt("Steam account name: ", false); err != nil {
-			return err
-		}
+	if *usePassword {
+		c, err = loginPassword(ctx, *user)
+	} else {
+		c, err = loginQR(ctx)
 	}
-	pass, err := prompt("Password: ", true)
-	if err != nil {
-		return err
-	}
-
-	c, err := auth.Login(ctx, auth.Options{
-		AccountName: name,
-		Password:    pass,
-		Guard: auth.GuardFunc(func(ctx context.Context, kind auth.GuardType, msg string) (string, error) {
-			if kind == auth.GuardDeviceConfirmation {
-				fmt.Fprintln(os.Stderr, "Approve the login in the Steam mobile app...")
-				return "", nil
-			}
-			label := fmt.Sprintf("Steam Guard %s", kind)
-			if msg != "" {
-				label += " (" + msg + ")"
-			}
-			return prompt(label+": ", false)
-		}),
-	})
 	if err != nil {
 		return err
 	}
@@ -186,6 +168,56 @@ func cmdLogin(ctx context.Context, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Logged in as %s, credentials saved to %s\n", c.AccountName, credsPath())
 	return nil
+}
+
+func loginQR(ctx context.Context) (*auth.Credentials, error) {
+	return auth.LoginQR(ctx, auth.QROptions{
+		OnChallenge: func(url string) {
+			fmt.Fprintln(os.Stderr, "\nScan with the Steam mobile app, then approve the login there.")
+			fmt.Fprintln(os.Stderr, "Or open this link on your phone:", url)
+			fmt.Fprintln(os.Stderr)
+			qrterminal.GenerateWithConfig(url, qrterminal.Config{
+				Level:          qrterminal.L,
+				Writer:         os.Stderr,
+				HalfBlocks:     true,
+				BlackChar:      qrterminal.BLACK_BLACK,
+				WhiteChar:      qrterminal.WHITE_WHITE,
+				BlackWhiteChar: qrterminal.BLACK_WHITE,
+				WhiteBlackChar: qrterminal.WHITE_BLACK,
+				QuietZone:      2,
+			})
+			fmt.Fprintln(os.Stderr, "\nWaiting for approval... (ctrl-c to cancel, or use `login -password`)")
+		},
+	})
+}
+
+func loginPassword(ctx context.Context, name string) (*auth.Credentials, error) {
+	var err error
+	if name == "" {
+		if name, err = prompt("Steam account name: ", false); err != nil {
+			return nil, err
+		}
+	}
+	pass, err := prompt("Password: ", true)
+	if err != nil {
+		return nil, err
+	}
+
+	return auth.Login(ctx, auth.Options{
+		AccountName: name,
+		Password:    pass,
+		Guard: auth.GuardFunc(func(ctx context.Context, kind auth.GuardType, msg string) (string, error) {
+			if kind == auth.GuardDeviceConfirmation {
+				fmt.Fprintln(os.Stderr, "Approve the login in the Steam mobile app...")
+				return "", nil
+			}
+			label := fmt.Sprintf("Steam Guard %s", kind)
+			if msg != "" {
+				label += " (" + msg + ")"
+			}
+			return prompt(label+": ", false)
+		}),
+	})
 }
 
 func openSession(ctx context.Context) (*session.Session, *creds, error) {
