@@ -6,7 +6,12 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -28,6 +33,7 @@ type Session struct {
 
 	mu        sync.Mutex
 	depotKeys map[uint32][]byte
+	keyFile   string
 	cdnClient *cdn.Client
 }
 
@@ -35,8 +41,12 @@ type Options struct {
 	AccountName  string
 	RefreshToken string
 	Logf         func(format string, args ...any)
-	// DepotKeys seeds the key cache, typically from a previous run.
+	// DepotKeys seeds the key cache.
 	DepotKeys map[uint32][]byte
+	// KeyFile, when set, is a JSON file the key cache is loaded from on
+	// open and written back to whenever a new key is learned. Depot keys
+	// never change, so caching them saves a CM round trip per depot.
+	KeyFile string
 }
 
 func Open(ctx context.Context, opts Options) (*Session, error) {
@@ -61,7 +71,65 @@ func Open(ctx context.Context, opts Options) (*Session, error) {
 	for id, k := range opts.DepotKeys {
 		s.depotKeys[id] = k
 	}
+	if opts.KeyFile != "" {
+		s.keyFile = opts.KeyFile
+		saved, err := LoadKeys(opts.KeyFile)
+		if err != nil {
+			client.Close()
+			return nil, err
+		}
+		for id, k := range saved {
+			s.depotKeys[id] = k
+		}
+	}
 	return s, nil
+}
+
+// LoadKeys reads a key cache written by SaveKeys. A missing file is empty.
+func LoadKeys(path string) (map[uint32][]byte, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[uint32][]byte{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing depot key cache %s: %w", path, err)
+	}
+	out := make(map[uint32][]byte, len(raw))
+	for id, k := range raw {
+		n, err := strconv.ParseUint(id, 10, 32)
+		if err != nil {
+			continue
+		}
+		b, err := hex.DecodeString(k)
+		if err != nil {
+			continue
+		}
+		out[uint32(n)] = b
+	}
+	return out, nil
+}
+
+func SaveKeys(path string, keys map[uint32][]byte) error {
+	raw := make(map[string]string, len(keys))
+	for id, k := range keys {
+		raw[strconv.FormatUint(uint64(id), 10)] = hex.EncodeToString(k)
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (s *Session) Close() error { return s.CM.Close() }
@@ -106,7 +174,17 @@ func (s *Session) DepotKey(ctx context.Context, appID, depotID uint32) ([]byte, 
 	key := res.GetDepotEncryptionKey()
 	s.mu.Lock()
 	s.depotKeys[depotID] = key
+	keyFile := s.keyFile
+	snapshot := make(map[uint32][]byte, len(s.depotKeys))
+	for id, k := range s.depotKeys {
+		snapshot[id] = k
+	}
 	s.mu.Unlock()
+	if keyFile != "" {
+		if err := SaveKeys(keyFile, snapshot); err != nil {
+			s.Logf("session: saving depot key cache: %v", err)
+		}
+	}
 	return key, nil
 }
 

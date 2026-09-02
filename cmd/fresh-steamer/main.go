@@ -5,7 +5,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/itchio/fresh-steamer/appinfo"
 	"github.com/itchio/fresh-steamer/auth"
-	"github.com/itchio/fresh-steamer/cdn"
 	"github.com/itchio/fresh-steamer/depot"
 	"github.com/itchio/fresh-steamer/partner"
 	"github.com/itchio/fresh-steamer/session"
@@ -29,11 +27,10 @@ import (
 )
 
 type creds struct {
-	AccountName  string            `json:"account_name"`
-	SteamID      uint64            `json:"steam_id"`
-	RefreshToken string            `json:"refresh_token"`
-	PublisherKey string            `json:"publisher_key,omitempty"`
-	DepotKeys    map[string]string `json:"depot_keys,omitempty"`
+	AccountName  string `json:"account_name"`
+	SteamID      uint64 `json:"steam_id"`
+	RefreshToken string `json:"refresh_token"`
+	PublisherKey string `json:"publisher_key,omitempty"`
 }
 
 func credsPath() string {
@@ -229,17 +226,10 @@ func openSession(ctx context.Context) (*session.Session, *creds, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	keys := map[uint32][]byte{}
-	for id, k := range c.DepotKeys {
-		n, _ := strconv.ParseUint(id, 10, 32)
-		if b, err := hex.DecodeString(k); err == nil {
-			keys[uint32(n)] = b
-		}
-	}
 	s, err := session.Open(ctx, session.Options{
 		AccountName:  c.AccountName,
 		RefreshToken: c.RefreshToken,
-		DepotKeys:    keys,
+		KeyFile:      filepath.Join(filepath.Dir(credsPath()), "depot_keys.json"),
 		Logf: func(format string, args ...any) {
 			if os.Getenv("FRESH_STEAMER_DEBUG") != "" {
 				fmt.Fprintf(os.Stderr, format+"\n", args...)
@@ -250,14 +240,6 @@ func openSession(ctx context.Context) (*session.Session, *creds, error) {
 		return nil, nil, err
 	}
 	return s, c, nil
-}
-
-func saveKeys(s *session.Session, c *creds) {
-	c.DepotKeys = map[string]string{}
-	for id, k := range s.DepotKeys() {
-		c.DepotKeys[strconv.FormatUint(uint64(id), 10)] = hex.EncodeToString(k)
-	}
-	_ = saveCreds(c)
 }
 
 func partnerClient() (*partner.Client, error) {
@@ -470,7 +452,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 		usage()
 	}
 
-	s, c, err := openSession(ctx)
+	s, _, err := openSession(ctx)
 	if err != nil {
 		return err
 	}
@@ -494,7 +476,6 @@ func cmdDownload(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	saveKeys(s, c)
 
 	code, err := s.ManifestRequestCode(ctx, app.ID, d.ID, gid, *branch, "")
 	if err != nil {
@@ -510,16 +491,13 @@ func cmdDownload(ctx context.Context, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "manifest: %d files, %d bytes\n", len(manifest.Files), manifest.TotalSize)
 
-	stateDir := filepath.Join(*dir, ".fresh-steamer")
-	prev := loadPrevious(stateDir, d.ID)
-
 	var last depot.Progress
 	err = depot.Download(ctx, cdnClient, depot.Options{
 		Dir:      *dir,
 		DepotID:  d.ID,
 		DepotKey: key,
 		Manifest: manifest,
-		Previous: prev,
+		Store:    &depot.Store{Dir: filepath.Join(*dir, ".fresh-steamer")},
 		OnProgress: func(p depot.Progress) {
 			last = p
 			if p.BytesTotal > 0 {
@@ -532,30 +510,5 @@ func cmdDownload(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "done, %d bytes skipped as unchanged\n", last.BytesSkipped)
-	return savePrevious(stateDir, d.ID, manifest)
-}
-
-// Previous manifests are kept as JSON next to the download so a later run
-// can skip unchanged files.
-func loadPrevious(stateDir string, depotID uint32) *cdn.Manifest {
-	data, err := os.ReadFile(filepath.Join(stateDir, fmt.Sprintf("manifest-%d.json", depotID)))
-	if err != nil {
-		return nil
-	}
-	var m cdn.Manifest
-	if json.Unmarshal(data, &m) != nil {
-		return nil
-	}
-	return &m
-}
-
-func savePrevious(stateDir string, depotID uint32, m *cdn.Manifest) error {
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return err
-	}
-	data, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(stateDir, fmt.Sprintf("manifest-%d.json", depotID)), data, 0o644)
+	return nil
 }

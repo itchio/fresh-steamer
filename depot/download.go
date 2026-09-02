@@ -31,7 +31,10 @@ type Options struct {
 	Manifest *cdn.Manifest
 	// Previous, when set, lets files with an unchanged content hash be
 	// skipped as long as they are still on disk at the right size.
-	Previous    *cdn.Manifest
+	Previous *cdn.Manifest
+	// Store supplies Previous when it is nil and records Manifest once the
+	// download succeeds.
+	Store       *Store
 	Concurrency int
 	OnProgress  func(Progress)
 	Logf        func(format string, args ...any)
@@ -46,6 +49,23 @@ func Download(ctx context.Context, c *cdn.Client, opts Options) error {
 	if opts.Logf == nil {
 		opts.Logf = func(string, ...any) {}
 	}
+	if opts.Store != nil && opts.Previous == nil {
+		prev, err := opts.Store.Previous(opts.DepotID)
+		if err != nil {
+			return err
+		}
+		opts.Previous = prev
+	}
+	if err := download(ctx, c, opts); err != nil {
+		return err
+	}
+	if opts.Store != nil {
+		return opts.Store.Save(opts.DepotID, opts.Manifest)
+	}
+	return nil
+}
+
+func download(ctx context.Context, c *cdn.Client, opts Options) error {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return err
 	}
