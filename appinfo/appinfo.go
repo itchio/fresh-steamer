@@ -29,9 +29,14 @@ const (
 type App struct {
 	ID           uint32
 	Name         string
+	Type         string // "Game", "Demo", "Beta", "Tool", "DLC"
 	ChangeNumber uint32
-	Depots       []*Depot
-	Branches     []*Branch
+	// OSList and OSArch come from the app's common section. Depots that set
+	// no oslist of their own inherit these.
+	OSList   []string
+	OSArch   string
+	Depots   []*Depot
+	Branches []*Branch
 	// Raw is the full KeyValues tree for anything not modelled here.
 	Raw *vdf.Node
 }
@@ -83,6 +88,15 @@ func (a *App) Depot(id uint32) *Depot {
 		}
 	}
 	return nil
+}
+
+// EffectiveOSList is the depot's oslist, or the app's when the depot sets
+// none. An empty result means the depot is not platform specific at all.
+func (a *App) EffectiveOSList(d *Depot) []string {
+	if len(d.OSList) > 0 {
+		return d.OSList
+	}
+	return a.OSList
 }
 
 // MatchesOS reports whether the depot applies to os ("windows", "macos",
@@ -218,9 +232,12 @@ func parse(n *vdf.Node) *App {
 		return nil
 	}
 	app := &App{
-		ID:   n.Get("appid").Uint32(),
-		Name: n.Path("common", "name").String(),
-		Raw:  n,
+		ID:     n.Get("appid").Uint32(),
+		Name:   n.Path("common", "name").String(),
+		Type:   n.Path("common", "type").String(),
+		OSList: splitList(n.Path("common", "oslist").String()),
+		OSArch: n.Path("common", "osarch").String(),
+		Raw:    n,
 	}
 	depots := n.Get("depots")
 	if depots == nil {
@@ -257,13 +274,7 @@ func parse(n *vdf.Node) *App {
 			Manifests:          map[string]*Manifest{},
 			EncryptedManifests: map[string]string{},
 		}
-		if osl := d.Path("config", "oslist").String(); osl != "" {
-			for _, o := range strings.Split(osl, ",") {
-				if o = strings.TrimSpace(o); o != "" {
-					dep.OSList = append(dep.OSList, o)
-				}
-			}
-		}
+		dep.OSList = splitList(d.Path("config", "oslist").String())
 		if m := d.Get("manifests"); m != nil {
 			for _, br := range m.Children {
 				if br.IsLeaf() {
@@ -291,6 +302,16 @@ func parse(n *vdf.Node) *App {
 	}
 	sort.Slice(app.Depots, func(i, j int) bool { return app.Depots[i].ID < app.Depots[j].ID })
 	return app
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, o := range strings.Split(s, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func parseUint32(s string) uint32 {

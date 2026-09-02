@@ -412,7 +412,11 @@ func cmdInfo(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("app %d: %s (change %d)\n\nbranches:\n", app.ID, app.Name, app.ChangeNumber)
+	appOS := strings.Join(app.OSList, ",")
+	if app.OSArch != "" {
+		appOS += "/" + app.OSArch
+	}
+	fmt.Printf("app %d: %s (%s, %s, change %d)\n\nbranches:\n", app.ID, app.Name, app.Type, appOS, app.ChangeNumber)
 	for _, b := range app.Branches {
 		pw := ""
 		if b.PasswordRequired {
@@ -434,7 +438,11 @@ func cmdInfo(ctx context.Context, args []string) error {
 		}
 		os := strings.Join(d.OSList, ",")
 		if os == "" {
-			os = "all"
+			if len(app.OSList) > 0 {
+				os = strings.Join(app.OSList, ",") + " (from app)"
+			} else {
+				os = "all"
+			}
 		}
 		if d.OSArch != "" {
 			os += "/" + d.OSArch
