@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/itchio/fresh-steamer/appinfo"
 	"github.com/itchio/fresh-steamer/auth"
 	"github.com/itchio/fresh-steamer/cdn"
 	"github.com/itchio/fresh-steamer/depot"
@@ -101,7 +102,9 @@ func main() {
 	case "partner-key":
 		err = cmdPartnerKey(ctx)
 	case "apps":
-		err = cmdApps(ctx)
+		err = cmdApps(ctx, os.Args[2:])
+	case "partner-apps":
+		err = cmdPartnerApps(ctx)
 	case "builds":
 		err = cmdBuilds(ctx, os.Args[2:])
 	case "info":
@@ -122,7 +125,8 @@ func usage() {
   fresh-steamer login [-password] [-user NAME]
   fresh-steamer logout
   fresh-steamer partner-key
-  fresh-steamer apps
+  fresh-steamer apps [-all]        apps the Steam account holds a license for
+  fresh-steamer partner-apps       apps the publisher key controls
   fresh-steamer builds APPID
   fresh-steamer info APPID
   fresh-steamer download -app APPID -depot DEPOTID [-branch public] [-password PW] -dir DIR`)
@@ -256,9 +260,6 @@ func saveKeys(s *session.Session, c *creds) {
 	_ = saveCreds(c)
 }
 
-// partnerClient needs a stored publisher key. Every command that touches an
-// app goes through it so the tool only ever works on apps the developer
-// controls, not anything the Steam account merely owns.
 func partnerClient() (*partner.Client, error) {
 	c, err := loadCredsOptional()
 	if err != nil {
@@ -268,27 +269,6 @@ func partnerClient() (*partner.Client, error) {
 		return nil, fmt.Errorf("no publisher key stored, run `fresh-steamer partner-key` first")
 	}
 	return partner.NewClient(c.PublisherKey), nil
-}
-
-func requirePartnerApp(ctx context.Context, appID uint32) error {
-	// Development escape hatch for exercising the download path against a
-	// game the account merely owns. Butler must never expose this.
-	if os.Getenv("FRESH_STEAMER_UNGATED") != "" {
-		fmt.Fprintln(os.Stderr, "WARNING: FRESH_STEAMER_UNGATED set, skipping publisher key check")
-		return nil
-	}
-	pc, err := partnerClient()
-	if err != nil {
-		return err
-	}
-	ok, err := pc.HasApp(ctx, appID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("app %d is not one of the apps your publisher key controls, see `fresh-steamer apps`", appID)
-	}
-	return nil
 }
 
 func cmdPartnerKey(ctx context.Context) error {
@@ -317,7 +297,59 @@ func cmdPartnerKey(ctx context.Context) error {
 	return nil
 }
 
-func cmdApps(ctx context.Context) error {
+func cmdApps(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("apps", flag.ExitOnError)
+	all := fs.Bool("all", false, "include package 0, the free tools every account has")
+	fs.Parse(args)
+
+	s, _, err := openSession(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	licenses, err := appinfo.Licenses(ctx, s.CM)
+	if err != nil {
+		return err
+	}
+	packages, err := appinfo.Packages(ctx, s.CM, licenses)
+	if err != nil {
+		return err
+	}
+	byApp := map[uint32][]*appinfo.Package{}
+	var ids []uint32
+	for _, p := range packages {
+		if p.ID == 0 && !*all {
+			continue
+		}
+		for _, a := range p.AppIDs {
+			if _, seen := byApp[a]; !seen {
+				ids = append(ids, a)
+			}
+			byApp[a] = append(byApp[a], p)
+		}
+	}
+	names, err := appinfo.Names(ctx, s.CM, ids)
+	if err != nil {
+		return err
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	fmt.Printf("%d licenses, %d apps\n\n", len(licenses), len(ids))
+	for _, id := range ids {
+		var via []string
+		for _, p := range byApp[id] {
+			label := fmt.Sprintf("%d (%s)", p.ID, appinfo.BillingTypeName(p.BillingType))
+			if p.DeveloperOnly {
+				label += " [developer]"
+			}
+			via = append(via, label)
+		}
+		fmt.Printf("%-10d %-40s via package %s\n", id, names[id], strings.Join(via, "; "))
+	}
+	return nil
+}
+
+func cmdPartnerApps(ctx context.Context) error {
 	pc, err := partnerClient()
 	if err != nil {
 		return err
@@ -368,9 +400,6 @@ func cmdInfo(ctx context.Context, args []string) error {
 	}
 	appID, err := strconv.ParseUint(args[0], 10, 32)
 	if err != nil {
-		return err
-	}
-	if err := requirePartnerApp(ctx, uint32(appID)); err != nil {
 		return err
 	}
 	s, _, err := openSession(ctx)
@@ -431,9 +460,6 @@ func cmdDownload(ctx context.Context, args []string) error {
 	fs.Parse(args)
 	if *appID == 0 || *depotID == 0 || *dir == "" {
 		usage()
-	}
-	if err := requirePartnerApp(ctx, uint32(*appID)); err != nil {
-		return err
 	}
 
 	s, c, err := openSession(ctx)

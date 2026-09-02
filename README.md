@@ -7,16 +7,18 @@ the content servers. No steamcmd, no DepotDownloader.
 Built for `butler steam-sync`, usable on its own.
 
 Two credentials are involved. A Steam account is needed because the content
-servers only hand out depots to accounts holding a license. A publisher Web
-API key from the partner site is needed to prove the account actually
-develops the app; every command that touches an app checks the app against
-the key's app list first. This is a tool for moving your own builds, not
-for copying a library.
+servers only hand out depots to accounts holding a license, and they cannot
+tell a developer from a customer. A publisher Web API key from the partner
+site is what proves the account actually develops an app. The library
+exposes both; deciding when to require the key is up to the caller. The
+`fresh-steamer` command here is a bag of development tools and does not
+gate on it. Butler does.
 
 ```
 go run ./cmd/fresh-steamer login
 go run ./cmd/fresh-steamer partner-key
 go run ./cmd/fresh-steamer apps
+go run ./cmd/fresh-steamer partner-apps
 go run ./cmd/fresh-steamer builds 440
 go run ./cmd/fresh-steamer info 440
 go run ./cmd/fresh-steamer download -app 440 -depot 441 -dir ./out
