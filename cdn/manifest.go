@@ -81,13 +81,17 @@ func (c *Client) FetchManifest(ctx context.Context, depotID uint32, gid uint64, 
 	if requestCode != 0 {
 		path = fmt.Sprintf("%s/%d", path, requestCode)
 	}
-	raw, err := c.get(ctx, path)
+	var m *Manifest
+	err := c.retry(ctx, fmt.Sprintf("manifest %d", gid), func() error {
+		raw, err := c.get(ctx, path)
+		if err != nil {
+			return err
+		}
+		m, err = ParseManifest(raw)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetching manifest %d for depot %d: %w", gid, depotID, err)
-	}
-	m, err := ParseManifest(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parsing manifest %d for depot %d: %w", gid, depotID, err)
 	}
 	if m.FilenamesEncrypted {
 		if depotKey == nil {
@@ -231,13 +235,15 @@ func (m *Manifest) normalizeNames() {
 	}
 }
 
+// get tries every server once, starting from a rotating offset.
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	if len(c.Servers) == 0 {
 		return nil, errors.New("cdn: no servers configured")
 	}
+	start := int(c.next.Add(1)-1) % len(c.Servers)
 	var lastErr error
 	for i := range c.Servers {
-		srv := c.Servers[i]
+		srv := c.Servers[(start+i)%len(c.Servers)]
 		req, err := http.NewRequestWithContext(ctx, "GET", srv.BaseURL()+path, nil)
 		if err != nil {
 			return nil, err
@@ -262,9 +268,7 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 		}
 		lastErr = fmt.Errorf("%s: HTTP %d", srv.Host, res.StatusCode)
 		if res.StatusCode == 401 || res.StatusCode == 403 || res.StatusCode == 404 {
-			// Authorization and missing-content errors are the same on every
-			// server, so retrying elsewhere only burns time.
-			return nil, lastErr
+			return nil, permanentError{lastErr}
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

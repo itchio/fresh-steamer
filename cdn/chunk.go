@@ -18,22 +18,30 @@ import (
 // FetchChunk downloads one chunk and returns its plain contents, verified
 // against the manifest checksum.
 func (c *Client) FetchChunk(ctx context.Context, depotID uint32, chunk *Chunk, depotKey []byte) ([]byte, error) {
-	raw, err := c.get(ctx, fmt.Sprintf("/depot/%d/chunk/%s", depotID, hex.EncodeToString(chunk.SHA)))
-	if err != nil {
-		return nil, fmt.Errorf("fetching chunk %x: %w", chunk.SHA[:4], err)
-	}
-	data, err := DecodeChunk(raw, depotKey)
-	if c.Logf != nil && err == nil {
+	path := fmt.Sprintf("/depot/%d/chunk/%s", depotID, hex.EncodeToString(chunk.SHA))
+	var data []byte
+	err := c.retry(ctx, fmt.Sprintf("chunk %x", chunk.SHA[:4]), func() error {
+		raw, err := c.get(ctx, path)
+		if err != nil {
+			return err
+		}
+		// Decode and checksum failures are retried too: a bad body from one
+		// cache node is the most likely cause.
+		data, err = DecodeChunk(raw, depotKey)
+		if err != nil {
+			return fmt.Errorf("decoding: %w", err)
+		}
 		c.Logf("cdn: chunk %x %s %d -> %d bytes", chunk.SHA[:4], compressionName(raw, depotKey), len(raw), len(data))
-	}
+		if uint32(len(data)) != chunk.Size {
+			return fmt.Errorf("got %d bytes, manifest says %d", len(data), chunk.Size)
+		}
+		if sum := steamcrypto.Adler(data); sum != chunk.Checksum {
+			return errors.New("checksum mismatch")
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("decoding chunk %x: %w", chunk.SHA[:4], err)
-	}
-	if uint32(len(data)) != chunk.Size {
-		return nil, fmt.Errorf("chunk %x: got %d bytes, manifest says %d", chunk.SHA[:4], len(data), chunk.Size)
-	}
-	if sum := steamcrypto.Adler(data); sum != chunk.Checksum {
-		return nil, fmt.Errorf("chunk %x: checksum mismatch", chunk.SHA[:4])
+		return nil, fmt.Errorf("chunk %x: %w", chunk.SHA[:4], err)
 	}
 	return data, nil
 }
