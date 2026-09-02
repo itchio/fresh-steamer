@@ -22,6 +22,7 @@ import (
 	"github.com/itchio/fresh-steamer/depot"
 	"github.com/itchio/fresh-steamer/partner"
 	"github.com/itchio/fresh-steamer/session"
+	"github.com/itchio/fresh-steamer/store"
 	"github.com/mdp/qrterminal/v3"
 	"golang.org/x/term"
 )
@@ -106,6 +107,8 @@ func main() {
 		err = cmdBuilds(ctx, os.Args[2:])
 	case "info":
 		err = cmdInfo(ctx, os.Args[2:])
+	case "page":
+		err = cmdPage(ctx, os.Args[2:])
 	case "download":
 		err = cmdDownload(ctx, os.Args[2:])
 	default:
@@ -126,6 +129,7 @@ func usage() {
   fresh-steamer partner-apps       apps the publisher key controls
   fresh-steamer builds APPID
   fresh-steamer info APPID
+  fresh-steamer page APPID [-out DIR]   store listing and artwork as JSON, assets downloaded into DIR
   fresh-steamer download -app APPID -depot DEPOTID [-branch public] [-password PW] -dir DIR`)
 	os.Exit(2)
 }
@@ -438,6 +442,108 @@ func cmdInfo(ctx context.Context, args []string) error {
 		}
 	}
 	return nil
+}
+
+// pageDump is what the page command prints: store data when a public
+// listing exists, app info artwork always, and the parent app for
+// playtests and demos so a caller can look there for the listing.
+type pageDump struct {
+	AppID        uint32                `json:"app_id"`
+	Name         string                `json:"name"`
+	Type         string                `json:"type"`
+	Parent       uint32                `json:"parent,omitempty"`
+	ReleaseState string                `json:"release_state"`
+	ReleaseDate  int64                 `json:"release_date_unix,omitempty"`
+	OSList       []string              `json:"os_list"`
+	Associations []appinfo.Association `json:"associations"`
+	Assets       appinfo.Assets        `json:"assets"`
+	Store        *store.Page           `json:"store,omitempty"`
+	StoreError   string                `json:"store_error,omitempty"`
+	Files        map[string]string     `json:"files,omitempty"`
+}
+
+func cmdPage(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		usage()
+	}
+	appID, err := strconv.ParseUint(args[0], 10, 32)
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("page", flag.ExitOnError)
+	out := fs.String("out", "", "directory to download artwork and screenshots into")
+	lang := fs.String("lang", "english", "store language")
+	fs.Parse(args[1:])
+
+	s, _, err := openSession(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	app, err := s.AppInfo(ctx, uint32(appID))
+	if err != nil {
+		return err
+	}
+	dump := pageDump{
+		AppID:        app.ID,
+		Name:         app.Name,
+		Type:         app.Type,
+		Parent:       app.Parent(),
+		ReleaseState: app.ReleaseState(),
+		ReleaseDate:  app.ReleaseDate(),
+		OSList:       app.OSList,
+		Associations: app.Associations(),
+		Assets:       app.Assets(),
+	}
+
+	page, err := store.NewClient().Fetch(ctx, app.ID, *lang)
+	if err != nil {
+		dump.StoreError = err.Error()
+	} else {
+		dump.Store = page
+	}
+
+	if *out != "" {
+		dump.Files = map[string]string{}
+		get := func(label, url string) {
+			if url == "" {
+				return
+			}
+			p, err := store.Download(ctx, nil, url, *out, label)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "warning:", err)
+				return
+			}
+			dump.Files[label] = p
+		}
+		a := dump.Assets
+		get("icon", a.Icon)
+		get("header", a.Header)
+		get("small_capsule", a.SmallCapsule)
+		get("library_capsule", a.LibraryCapsule)
+		get("library_hero", a.LibraryHero)
+		get("library_logo", a.LibraryLogo)
+		get("library_header", a.LibraryHeader)
+		if page != nil {
+			get("store_header", page.HeaderImage)
+			get("store_capsule", page.CapsuleImage)
+			get("background", page.Background)
+			for i, sc := range page.Screenshots {
+				get(fmt.Sprintf("screenshot_%02d", i+1), sc.Full)
+			}
+			for i, m := range page.Movies {
+				get(fmt.Sprintf("movie_%02d_thumb", i+1), m.Thumbnail)
+			}
+		}
+		data, _ := json.MarshalIndent(dump, "", "  ")
+		if err := os.WriteFile(filepath.Join(*out, "page.json"), data, 0o644); err != nil {
+			return err
+		}
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(dump)
 }
 
 func cmdDownload(ctx context.Context, args []string) error {
