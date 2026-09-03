@@ -615,6 +615,6 @@ func cmdDownload(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "done, %d bytes skipped as unchanged\n", last.BytesSkipped)
+	fmt.Fprintf(os.Stderr, "done, %d bytes skipped as unchanged, %d bytes reused from old files\n", last.BytesSkipped, last.BytesReused)
 	return nil
 }

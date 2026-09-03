@@ -205,15 +205,89 @@ func TestDownloadResumesAfterInterruption(t *testing.T) {
 		t.Fatal("journal should be cleared after success")
 	}
 
-	// A different manifest id must not resume from the old journal.
+	// A different manifest id must not resume from the old journal. The
+	// bytes on disk are still reused, but only after hashing them, so a
+	// corrupted chunk is fetched again.
 	store.SaveJournal(1, &Journal{GID: 1, Done: j0(chunks)})
+	fh, _ := os.OpenFile(filepath.Join(dir, "big.bin"), os.O_WRONLY, 0)
+	fh.WriteAt([]byte("corrupt"), 450)
+	fh.Close()
 	f.hits.Store(0)
 	m2 := &cdn.Manifest{GID: 78, Files: []*cdn.File{file}}
-	if err := Download(context.Background(), client, Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: m2, Store: store}); err != nil {
+	if err := Download(context.Background(), client, Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: m2, Store: store, OnProgress: func(p Progress) { last = p }}); err != nil {
 		t.Fatal(err)
 	}
-	if f.hits.Load() != 6 {
-		t.Fatalf("expected full refetch with stale journal, got %d", f.hits.Load())
+	if f.hits.Load() != 1 || last.BytesReused != 1000 {
+		t.Fatalf("expected 1 fetch and 1000 bytes reused with stale journal, got %d fetches, %+v", f.hits.Load(), last)
+	}
+	got, _ = os.ReadFile(filepath.Join(dir, "big.bin"))
+	if !bytes.Equal(got, bytes.Join(parts, nil)) {
+		t.Fatal("content mismatch after reuse")
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(dir, "*"+oldSuffix)); len(leftovers) != 0 {
+		t.Fatalf("stashed files left behind: %v", leftovers)
+	}
+}
+
+func TestDownloadReusesChunksFromOldVersions(t *testing.T) {
+	f := newFakeCDN(t)
+	a := bytes.Repeat([]byte("A"), 300)
+	b := bytes.Repeat([]byte("B"), 300)
+	c := bytes.Repeat([]byte("C"), 300)
+	x := bytes.Repeat([]byte("X"), 100)
+	d := bytes.Repeat([]byte("D"), 300)
+
+	// v1: pack.bin = A B C, old.bin = D
+	v1 := &cdn.Manifest{GID: 1, Files: []*cdn.File{
+		{Name: "pack.bin", Size: 900, Chunks: []*cdn.Chunk{f.chunk(t, a, 0), f.chunk(t, b, 300), f.chunk(t, c, 600)}},
+		{Name: "old.bin", Size: 300, Chunks: []*cdn.Chunk{f.chunk(t, d, 0)}},
+	}}
+	dir := t.TempDir()
+	store := &Store{Dir: filepath.Join(dir, ".state")}
+	if err := Download(context.Background(), f.client(), Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: v1, Store: store}); err != nil {
+		t.Fatal(err)
+	}
+
+	// v2: X inserted in the middle of pack.bin so B and C shift, and
+	// old.bin renamed to new.bin. Only X is new.
+	v2 := &cdn.Manifest{GID: 2, Files: []*cdn.File{
+		{Name: "pack.bin", Size: 1000, Chunks: []*cdn.Chunk{f.chunk(t, a, 0), f.chunk(t, x, 300), f.chunk(t, b, 400), f.chunk(t, c, 700)}},
+		{Name: "new.bin", Size: 300, Chunks: []*cdn.Chunk{f.chunk(t, d, 0)}},
+	}}
+	f.hits.Store(0)
+	var last Progress
+	if err := Download(context.Background(), f.client(), Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: v2, Store: store, OnProgress: func(p Progress) { last = p }}); err != nil {
+		t.Fatal(err)
+	}
+	if f.hits.Load() != 1 || last.BytesReused != 1200 {
+		t.Fatalf("expected 1 fetch and 1200 bytes reused, got %d fetches, %+v", f.hits.Load(), last)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "pack.bin"))
+	if !bytes.Equal(got, bytes.Join([][]byte{a, x, b, c}, nil)) {
+		t.Fatal("pack.bin content mismatch")
+	}
+	got, _ = os.ReadFile(filepath.Join(dir, "new.bin"))
+	if !bytes.Equal(got, d) {
+		t.Fatal("new.bin content mismatch")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "old.bin")); !os.IsNotExist(err) {
+		t.Fatal("old.bin should have been removed")
+	}
+
+	// No previous manifest at all: an existing file with A at offset 0
+	// still contributes that chunk by the same-offset guess.
+	dir2 := t.TempDir()
+	os.WriteFile(filepath.Join(dir2, "pack.bin"), bytes.Join([][]byte{a, bytes.Repeat([]byte("?"), 700)}, nil), 0o644)
+	f.hits.Store(0)
+	if err := Download(context.Background(), f.client(), Options{Dir: dir2, DepotID: 1, DepotKey: testKey, Manifest: v2, OnProgress: func(p Progress) { last = p }}); err != nil {
+		t.Fatal(err)
+	}
+	if f.hits.Load() != 4 || last.BytesReused != 300 {
+		t.Fatalf("expected 4 fetches and 300 bytes reused without previous manifest, got %d fetches, %+v", f.hits.Load(), last)
+	}
+	got, _ = os.ReadFile(filepath.Join(dir2, "pack.bin"))
+	if !bytes.Equal(got, bytes.Join([][]byte{a, x, b, c}, nil)) {
+		t.Fatal("pack.bin content mismatch without previous")
 	}
 }
 
