@@ -26,6 +26,22 @@ func NewClient(key string) *Client {
 	return &Client{Key: key, HTTP: http.DefaultClient, BaseURL: DefaultBaseURL}
 }
 
+// StatusError is a non-200 answer from the partner API. Unauthorized
+// reports whether it means the key itself was rejected.
+type StatusError struct {
+	Method string
+	Status int
+}
+
+func (e *StatusError) Error() string {
+	if e.Unauthorized() {
+		return fmt.Sprintf("partner api %s: HTTP %d, is the publisher key valid?", e.Method, e.Status)
+	}
+	return fmt.Sprintf("partner api %s: HTTP %d", e.Method, e.Status)
+}
+
+func (e *StatusError) Unauthorized() bool { return e.Status == 401 || e.Status == 403 }
+
 type App struct {
 	ID   uint32
 	Name string
@@ -134,12 +150,8 @@ func (c *Client) get(ctx context.Context, iface, method string, version int, q u
 	if err != nil {
 		return err
 	}
-	switch res.StatusCode {
-	case 200:
-	case 401, 403:
-		return fmt.Errorf("partner api %s: HTTP %d, is the publisher key valid?", method, res.StatusCode)
-	default:
-		return fmt.Errorf("partner api %s: HTTP %d", method, res.StatusCode)
+	if res.StatusCode != 200 {
+		return &StatusError{Method: method, Status: res.StatusCode}
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("partner api %s: decoding response: %w", method, err)
