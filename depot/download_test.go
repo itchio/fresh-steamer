@@ -298,3 +298,45 @@ func j0(chunks []*cdn.Chunk) []string {
 	}
 	return out
 }
+
+func TestStaleJournalInvalidatesPrevious(t *testing.T) {
+	f := newFakeCDN(t)
+	dir := t.TempDir()
+	store := &Store{Dir: filepath.Join(dir, ".state")}
+	client := f.client()
+
+	// Builds A and B differ only in one file's bytes, at the same size.
+	a := bytes.Repeat([]byte("a"), 100)
+	b := bytes.Repeat([]byte("b"), 100)
+	fileA := &cdn.File{Name: "x.bin", Size: 100, SHAContent: []byte("A"), Chunks: []*cdn.Chunk{f.chunk(t, a, 0)}}
+	fileB := &cdn.File{Name: "x.bin", Size: 100, SHAContent: []byte("B"), Chunks: []*cdn.Chunk{f.chunk(t, b, 0)}}
+	mA := &cdn.Manifest{GID: 1, Files: []*cdn.File{fileA}}
+	opts := Options{Dir: dir, DepotID: 1, DepotKey: testKey, Store: store}
+
+	opts.Manifest = mA
+	if err := Download(context.Background(), client, opts); err != nil {
+		t.Fatal(err)
+	}
+
+	// B gets as far as writing its bytes, then dies before the manifest
+	// is recorded, leaving only its journal behind.
+	if err := os.WriteFile(filepath.Join(dir, "x.bin"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.SaveJournal(1, &Journal{GID: 2, Done: j0(fileB.Chunks)})
+
+	f.hits.Store(0)
+	if err := Download(context.Background(), client, opts); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "x.bin"))
+	if !bytes.Equal(got, a) {
+		t.Fatalf("expected build A's bytes back, got %q", got[:8])
+	}
+	if f.hits.Load() != 1 {
+		t.Fatalf("expected 1 fetch, got %d", f.hits.Load())
+	}
+	if j, _ := store.Journal(1); j != nil {
+		t.Fatal("journal should be cleared after success")
+	}
+}

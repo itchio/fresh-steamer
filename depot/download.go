@@ -78,6 +78,12 @@ func Download(ctx context.Context, c *cdn.Client, opts Options) error {
 		}
 		if j != nil && j.GID == opts.Manifest.GID {
 			resume = j
+		} else if j != nil {
+			// An interrupted download of another build left an unknown mix
+			// of that build's bytes and the previous one's on disk, so no
+			// file can be trusted by size alone. Without Previous every
+			// chunk still on disk is reused only after hashing it.
+			opts.Previous = nil
 		}
 	}
 	if err := download(ctx, c, opts, resume); err != nil {
