@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -338,5 +339,37 @@ func TestStaleJournalInvalidatesPrevious(t *testing.T) {
 	}
 	if j, _ := store.Journal(1); j != nil {
 		t.Fatal("journal should be cleared after success")
+	}
+}
+
+func TestUnchangedContentPicksUpExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no executable bit")
+	}
+	f := newFakeCDN(t)
+	dir := t.TempDir()
+	client := f.client()
+	data := bytes.Repeat([]byte("r"), 50)
+	plain := &cdn.File{Name: "run.sh", Size: 50, SHAContent: []byte("R"), Chunks: []*cdn.Chunk{f.chunk(t, data, 0)}}
+	exec := &cdn.File{Name: "run.sh", Size: 50, SHAContent: []byte("R"), Flags: cdn.FlagExecutable, Chunks: plain.Chunks}
+	opts := Options{Dir: dir, DepotID: 1, DepotKey: testKey, Manifest: &cdn.Manifest{GID: 1, Files: []*cdn.File{plain}}}
+	if err := Download(context.Background(), client, opts); err != nil {
+		t.Fatal(err)
+	}
+	f.hits.Store(0)
+	opts.Previous = opts.Manifest
+	opts.Manifest = &cdn.Manifest{GID: 2, Files: []*cdn.File{exec}}
+	if err := Download(context.Background(), client, opts); err != nil {
+		t.Fatal(err)
+	}
+	if f.hits.Load() != 0 {
+		t.Fatalf("expected no fetches, got %d", f.hits.Load())
+	}
+	st, err := os.Stat(filepath.Join(dir, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode()&0o111 == 0 {
+		t.Fatalf("expected executable, got %v", st.Mode())
 	}
 }

@@ -202,6 +202,11 @@ func download(ctx context.Context, c *cdn.Client, opts Options, resume *Journal)
 		old := prevByName[f.Name]
 		if old != nil && sameContent(old, f) {
 			if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && uint64(st.Size()) == old.Size {
+				if old.IsExecutable() != f.IsExecutable() {
+					if err := os.Chmod(p, fileMode(f)); err != nil && runtime.GOOS != "windows" {
+						return err
+					}
+				}
 				prog.FilesDone++
 				prog.BytesDone += f.Size
 				prog.BytesSkipped += f.Size
@@ -481,10 +486,7 @@ func createFile(path string, f *cdn.File) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o644)
-	if f.IsExecutable() {
-		mode = 0o755
-	}
+	mode := fileMode(f)
 	// No O_TRUNC: on resume the existing bytes are what we are keeping, and
 	// otherwise every byte gets rewritten by a chunk anyway.
 	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, mode)
@@ -499,6 +501,13 @@ func createFile(path string, f *cdn.File) error {
 		return err
 	}
 	return nil
+}
+
+func fileMode(f *cdn.File) os.FileMode {
+	if f.IsExecutable() {
+		return 0o755
+	}
+	return 0o644
 }
 
 func writeAt(path string, data []byte, offset uint64) error {
