@@ -67,3 +67,13 @@ func TestParseBinary(t *testing.T) {
 		t.Fatalf("name: %q", pkg.Get("name").String())
 	}
 }
+
+func TestParseRejectsStrayBraces(t *testing.T) {
+	// An unquoted token used to come back empty without consuming the
+	// brace, so the parser looped forever appending empty nodes.
+	for _, src := range []string{"}", `"a" { "b" "c" } }`, `"a" }`, "{"} {
+		if _, err := Parse([]byte(src)); err == nil {
+			t.Errorf("Parse(%q): expected error", src)
+		}
+	}
+}

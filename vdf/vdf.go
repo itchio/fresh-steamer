@@ -146,6 +146,9 @@ func (p *parser) token() (string, error) {
 	if p.eof() {
 		return "", fmt.Errorf("vdf: unexpected end of input")
 	}
+	if c := p.s[p.pos]; c == '{' || c == '}' {
+		return "", fmt.Errorf("vdf: unexpected %q at offset %d", c, p.pos)
+	}
 	if p.s[p.pos] != '"' {
 		start := p.pos
 		for !p.eof() {
