@@ -43,8 +43,10 @@ type Options struct {
 	// download succeeds.
 	Store       *Store
 	Concurrency int
-	OnProgress  func(Progress)
-	Logf        func(format string, args ...any)
+	// OnProgress calls never overlap, so the callback may keep the latest
+	// value without locking.
+	OnProgress func(Progress)
+	Logf       func(format string, args ...any)
 }
 
 // Download materializes opts.Manifest under opts.Dir. Files present in
@@ -345,8 +347,8 @@ func download(ctx context.Context, c *cdn.Client, opts Options, resume *Journal)
 					prog.FilesDone++
 				}
 			}
-			mu.Unlock()
 			report()
+			mu.Unlock()
 			return nil
 		})
 	}
