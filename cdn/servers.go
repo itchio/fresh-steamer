@@ -83,6 +83,10 @@ type Client struct {
 	// Backoff is the wait before the first retry; it doubles each time up to
 	// ten times this value. Zero means the default of 500ms.
 	Backoff time.Duration
+	// Stall is how long a request may go without any progress, from
+	// dialing through each body read, before it is abandoned and the next
+	// server tried. Zero means the default of 30s.
+	Stall time.Duration
 
 	next atomic.Uint32
 }
@@ -96,6 +100,13 @@ func (c *Client) retries() int {
 		return 3
 	}
 	return c.Retries
+}
+
+func (c *Client) stall() time.Duration {
+	if c.Stall <= 0 {
+		return 30 * time.Second
+	}
+	return c.Stall
 }
 
 func (c *Client) backoff(attempt int) time.Duration {

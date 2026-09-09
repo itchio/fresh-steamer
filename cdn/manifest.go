@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/itchio/fresh-steamer/pb"
 	"github.com/itchio/fresh-steamer/steamcrypto"
@@ -245,35 +246,69 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	var lastErr error
 	for i := range c.Servers {
 		srv := c.Servers[(start+i)%len(c.Servers)]
-		req, err := http.NewRequestWithContext(ctx, "GET", srv.BaseURL()+path, nil)
+		body, status, err := c.getOnce(ctx, srv, path)
 		if err != nil {
-			return nil, err
-		}
-		if srv.VHost != "" {
-			req.Host = srv.VHost
-		}
-		req.Header.Set("User-Agent", "fresh-steamer/0.1")
-		res, err := c.HTTP.Do(req)
-		if err != nil {
-			lastErr = err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = fmt.Errorf("%s: %w", srv.Host, err)
 			continue
 		}
-		body, err := io.ReadAll(res.Body)
-		res.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if res.StatusCode == 200 {
+		if status == 200 {
 			return body, nil
 		}
-		lastErr = fmt.Errorf("%s: HTTP %d", srv.Host, res.StatusCode)
-		if res.StatusCode == 401 || res.StatusCode == 403 || res.StatusCode == 404 {
+		lastErr = fmt.Errorf("%s: HTTP %d", srv.Host, status)
+		if status == 401 || status == 403 || status == 404 {
 			return nil, permanentError{lastErr}
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
 		}
 	}
 	return nil, lastErr
+}
+
+// A connection that stops sending would otherwise hold a worker for the
+// life of ctx, since http.Client has no idle timeout of its own.
+func (c *Client) getOnce(ctx context.Context, srv Server, path string) ([]byte, int, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	stall := c.stall()
+	errStall := fmt.Errorf("no progress for %s", stall)
+	timer := time.AfterFunc(stall, func() { cancel(errStall) })
+	defer timer.Stop()
+	// Reports the stall instead of the bare "context canceled" it turned
+	// into on the way through net/http.
+	wrap := func(err error) error {
+		if cause := context.Cause(ctx); cause == errStall {
+			return errStall
+		}
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", srv.BaseURL()+path, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if srv.VHost != "" {
+		req.Host = srv.VHost
+	}
+	req.Header.Set("User-Agent", "fresh-steamer/0.1")
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, wrap(err)
+	}
+	defer res.Body.Close()
+	var body bytes.Buffer
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := res.Body.Read(buf)
+		body.Write(buf[:n])
+		if n > 0 {
+			timer.Reset(stall)
+		}
+		if err == io.EOF {
+			return body.Bytes(), res.StatusCode, nil
+		}
+		if err != nil {
+			return nil, 0, wrap(err)
+		}
+	}
 }

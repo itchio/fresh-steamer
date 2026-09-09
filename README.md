@@ -2,7 +2,7 @@
 
 A pure Go client for downloading depots from Steam. It logs in with a Steam
 account, reads an app's product info, and fetches manifests and chunks from
-the content servers. No steamcmd, no DepotDownloader.
+the content servers.
 
 Built for `butler steam-sync`, usable on its own.
 

@@ -80,3 +80,30 @@ func TestGetGivesUpAfterBudget(t *testing.T) {
 		t.Fatalf("hits=%d", *hits)
 	}
 }
+
+func TestGetAbandonsStalledRequests(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	c, hits := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		<-release
+	})
+	c.Stall = 50 * time.Millisecond
+
+	start := time.Now()
+	_, err := c.get(context.Background(), "/x")
+	if err == nil {
+		t.Fatal("expected stall error")
+	}
+	if !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(hits); got != 2 {
+		t.Fatalf("expected both servers tried, got %d", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("took %s to give up", elapsed)
+	}
+}
