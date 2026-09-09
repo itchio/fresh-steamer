@@ -6,6 +6,7 @@ package partner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -143,6 +144,11 @@ func (c *Client) get(ctx context.Context, iface, method string, version int, q u
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
+		// url.Error prints the full URL, key included.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return fmt.Errorf("partner api %s: %w", method, err)
 	}
 	defer res.Body.Close()
