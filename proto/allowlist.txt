@@ -1,0 +1,58 @@
+# Messages and enums compiled into the pb package. Anything they reference
+# (field types, nested types, enclosing messages) is pulled in automatically
+# by proto/prune. Add a name here when new code needs a type, then run
+# `go generate ./pb`. Names are fully qualified; Steam's protos have no
+# package, so top-level types are just their name and nested ones use dots.
+
+# steammessages_base.proto
+CMsgProtoBufHeader
+CMsgMulti
+
+# steammessages_clientserver_login.proto
+CMsgClientLogon
+CMsgClientLogonResponse
+CMsgClientLoggedOff
+CMsgClientHeartBeat
+
+# steammessages_clientserver.proto
+CMsgClientLicenseList
+
+# steammessages_clientserver_2.proto
+CMsgClientCheckAppBetaPassword
+CMsgClientCheckAppBetaPasswordResponse
+CMsgClientGetDepotDecryptionKey
+CMsgClientGetDepotDecryptionKeyResponse
+
+# steammessages_clientserver_appinfo.proto
+CMsgClientPICSAccessTokenRequest
+CMsgClientPICSAccessTokenResponse
+CMsgClientPICSProductInfoRequest
+CMsgClientPICSProductInfoResponse
+
+# steammessages_auth.steamclient.proto
+CAuthentication_DeviceDetails
+CAuthentication_GetPasswordRSAPublicKey_Request
+CAuthentication_GetPasswordRSAPublicKey_Response
+CAuthentication_BeginAuthSessionViaCredentials_Request
+CAuthentication_BeginAuthSessionViaCredentials_Response
+CAuthentication_BeginAuthSessionViaQR_Request
+CAuthentication_BeginAuthSessionViaQR_Response
+CAuthentication_PollAuthSessionStatus_Request
+CAuthentication_PollAuthSessionStatus_Response
+CAuthentication_UpdateAuthSessionWithSteamGuardCode_Request
+
+# steammessages_contentsystem.steamclient.proto
+CContentServerDirectory_GetServersForSteamPipe_Request
+CContentServerDirectory_GetServersForSteamPipe_Response
+CContentServerDirectory_GetManifestRequestCode_Request
+CContentServerDirectory_GetManifestRequestCode_Response
+
+# content_manifest.proto
+ContentManifestPayload
+ContentManifestMetadata
+ContentManifestSignature
+
+# enums.proto
+EAuthTokenPlatformType
+ESessionPersistence
+EAuthSessionGuardType

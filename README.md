@@ -42,3 +42,37 @@ Packages:
 [SteamKit](https://github.com/steamre/steamkit) and
 [DepotDownloader](https://github.com/steamre/depotdownloader) were used as
 references for undocumented protocol implementation.
+
+## Protobuf generation
+
+The `pb` package is generated from Valve's protobuf definitions. The `.proto`
+files in `proto/` are verbatim copies of the `steam/` directory in
+[SteamDatabase/Protobufs](https://github.com/SteamDatabase/Protobufs) and
+should never be edited by hand. To refresh them, copy the upstream files over
+the existing ones and regenerate.
+
+Those files define several hundred messages, and protobuf's generated code
+registers every message at init time, so anything compiled into `pb` ends up
+in every binary that links this module. To keep that small, generation is
+driven by an allowlist:
+
+1. `protoc` compiles every `.proto` into a single descriptor set.
+2. `proto/prune` reads `proto/allowlist.txt`, keeps the listed messages and
+   enums plus everything they reference (field types, nested types, enclosing
+   messages), drops services, extensions and Steam's custom options, and
+   rewrites each file's import list to match.
+3. The pruned descriptors are fed to `protoc-gen-go`, which writes `pb/*.pb.go`.
+
+To use a message or enum that isn't generated yet, add its fully qualified
+name to `proto/allowlist.txt` and run:
+
+```
+go generate ./pb
+```
+
+This needs `protoc` and `protoc-gen-go` on `PATH`. Names in the allowlist are
+proto names, not Go names: Steam's protos declare no package, so a top-level
+message is just `CMsgClientLogon`, and a nested one is written with a dot, as
+in `CMsgClientPICSProductInfoRequest.AppInfo`. The generator fails if a name
+doesn't exist in the descriptor set. Nested types are pulled in when their
+enclosing message needs them, so they rarely need listing explicitly.
