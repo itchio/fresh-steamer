@@ -78,7 +78,7 @@ type Client struct {
 	jobID     atomic.Uint64
 
 	mu     sync.Mutex
-	jobs   map[uint64]chan *Packet
+	jobs   map[uint64]*job
 	byEMsg map[uint32]chan *Packet
 	// stash keeps the last unsolicited packet per EMsg so callers can pick
 	// up things Steam pushes on its own schedule, like the license list.
@@ -124,7 +124,7 @@ func Connect(ctx context.Context, opts Options) (*Client, error) {
 
 	c := &Client{
 		conn:    conn,
-		jobs:    map[uint64]chan *Packet{},
+		jobs:    map[uint64]*job{},
 		byEMsg:  map[uint32]chan *Packet{},
 		stash:   map[uint32]*Packet{},
 		stashed: make(chan struct{}),
@@ -217,7 +217,7 @@ func (c *Client) Logon(ctx context.Context, accountName, refreshToken string) er
 		return err
 	}
 
-	pkt, err := c.recv(ctx, ch)
+	pkt, err := c.recvEMsg(ctx, ch)
 	if err != nil {
 		return fmt.Errorf("waiting for logon response: %w", err)
 	}
@@ -272,23 +272,15 @@ func (c *Client) Request(ctx context.Context, emsg uint32, body proto.Message) (
 // RequestMulti is Request for calls whose reply spans several packets. The
 // handler returns true once it has seen the last one.
 func (c *Client) RequestMulti(ctx context.Context, emsg uint32, body proto.Message, handler func(*Packet) (bool, error)) error {
-	id := c.jobID.Add(1)
-	ch := make(chan *Packet, 8)
-	c.mu.Lock()
-	c.jobs[id] = ch
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		delete(c.jobs, id)
-		c.mu.Unlock()
-	}()
+	id, j := c.newJob()
+	defer c.endJob(id)
 
 	hdr := &pb.CMsgProtoBufHeader{JobidSource: proto.Uint64(id)}
 	if err := c.send(emsg, hdr, body); err != nil {
 		return err
 	}
 	for {
-		pkt, err := c.recv(ctx, ch)
+		pkt, err := c.recv(ctx, j)
 		if err != nil {
 			return err
 		}
@@ -302,16 +294,8 @@ func (c *Client) RequestMulti(ctx context.Context, emsg uint32, body proto.Messa
 // Unified calls a Steam service method such as
 // "ContentServerDirectory.GetManifestRequestCode#1".
 func (c *Client) Unified(ctx context.Context, method string, in proto.Message, out proto.Message) error {
-	id := c.jobID.Add(1)
-	ch := make(chan *Packet, 1)
-	c.mu.Lock()
-	c.jobs[id] = ch
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		delete(c.jobs, id)
-		c.mu.Unlock()
-	}()
+	id, j := c.newJob()
+	defer c.endJob(id)
 
 	hdr := &pb.CMsgProtoBufHeader{
 		JobidSource:   proto.Uint64(id),
@@ -320,7 +304,7 @@ func (c *Client) Unified(ctx context.Context, method string, in proto.Message, o
 	if err := c.send(EMsgServiceMethodCallFromClient, hdr, in); err != nil {
 		return err
 	}
-	pkt, err := c.recv(ctx, ch)
+	pkt, err := c.recv(ctx, j)
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
@@ -333,7 +317,81 @@ func (c *Client) Unified(ctx context.Context, method string, in proto.Message, o
 	return pkt.Unmarshal(out)
 }
 
-func (c *Client) recv(ctx context.Context, ch <-chan *Packet) (*Packet, error) {
+// maxJobQueue bounds replies waiting on one job. A PICS product info
+// reply for a big app list runs to tens of packets; anything near this
+// means the consumer stopped reading.
+const maxJobQueue = 4096
+
+// job collects the reply packets for one outstanding request. The read
+// loop must never block on a consumer, and dropping a packet leaves the
+// consumer waiting forever, so packets queue up to maxJobQueue and past
+// that the job fails.
+type job struct {
+	mu    sync.Mutex
+	queue []*Packet
+	err   error
+	ready chan struct{}
+}
+
+func (j *job) push(pkt *Packet) {
+	j.mu.Lock()
+	switch {
+	case j.err != nil:
+	case len(j.queue) >= maxJobQueue:
+		j.err = errors.New("reply queue overflow")
+	default:
+		j.queue = append(j.queue, pkt)
+	}
+	j.mu.Unlock()
+	select {
+	case j.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (j *job) pop() (*Packet, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.queue) > 0 {
+		pkt := j.queue[0]
+		j.queue = j.queue[1:]
+		return pkt, nil
+	}
+	return nil, j.err
+}
+
+func (c *Client) newJob() (uint64, *job) {
+	id := c.jobID.Add(1)
+	j := &job{ready: make(chan struct{}, 1)}
+	c.mu.Lock()
+	c.jobs[id] = j
+	c.mu.Unlock()
+	return id, j
+}
+
+func (c *Client) endJob(id uint64) {
+	c.mu.Lock()
+	delete(c.jobs, id)
+	c.mu.Unlock()
+}
+
+func (c *Client) recv(ctx context.Context, j *job) (*Packet, error) {
+	for {
+		pkt, err := j.pop()
+		if pkt != nil || err != nil {
+			return pkt, err
+		}
+		select {
+		case <-j.ready:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.closed:
+			return nil, c.Err()
+		}
+	}
+}
+
+func (c *Client) recvEMsg(ctx context.Context, ch <-chan *Packet) (*Packet, error) {
 	select {
 	case pkt := <-ch:
 		return pkt, nil
@@ -439,13 +497,9 @@ func (c *Client) dispatch(pkt *Packet) {
 	}
 
 	c.mu.Lock()
-	if ch, ok := c.jobs[pkt.Header.GetJobidTarget()]; ok && pkt.Header.JobidTarget != nil {
+	if j, ok := c.jobs[pkt.Header.GetJobidTarget()]; ok && pkt.Header.JobidTarget != nil {
 		c.mu.Unlock()
-		select {
-		case ch <- pkt:
-		default:
-			c.Logf("cm: dropping packet for job %d, channel full", pkt.Header.GetJobidTarget())
-		}
+		j.push(pkt)
 		return
 	}
 	ch, ok := c.byEMsg[pkt.EMsg]
