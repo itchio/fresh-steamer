@@ -3,9 +3,13 @@ package cdn
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"crypto/sha1"
 	"encoding/binary"
 	"hash/crc32"
 	"math/rand"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/itchio/fresh-steamer/steamcrypto"
@@ -110,5 +114,32 @@ func TestDecodeChunkRejectsGarbage(t *testing.T) {
 	bad[len(bad)-1] = 'x'
 	if _, err := DecodeChunk(encrypt(t, bad), testKey); err == nil {
 		t.Fatal("expected footer error")
+	}
+}
+
+func TestFetchChunkVerifiesSHA(t *testing.T) {
+	want := samplePayload()
+	served := append([]byte(nil), want...)
+	served[0] ^= 1
+	body := encrypt(t, zipFrame(t, served))
+	c, hits := testClient(t, func(w http.ResponseWriter, r *http.Request) { w.Write(body) })
+
+	sum := sha1.Sum(want)
+	// Checksum matches the served bytes, so only the SHA can catch them.
+	chunk := &Chunk{SHA: sum[:], Checksum: steamcrypto.Adler(served), Size: uint32(len(want))}
+	if _, err := c.FetchChunk(context.Background(), 1, chunk, testKey); err == nil {
+		t.Fatal("expected sha1 mismatch")
+	} else if !strings.Contains(err.Error(), "sha1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if *hits < 2 {
+		t.Fatalf("expected the mismatch to be retried, got %d fetches", *hits)
+	}
+
+	body = encrypt(t, zipFrame(t, want))
+	chunk.Checksum = steamcrypto.Adler(want)
+	got, err := c.FetchChunk(context.Background(), 1, chunk, testKey)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("good chunk: %v", err)
 	}
 }

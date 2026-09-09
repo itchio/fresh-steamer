@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -37,6 +38,12 @@ func (c *Client) FetchChunk(ctx context.Context, depotID uint32, chunk *Chunk, d
 		}
 		if sum := steamcrypto.Adler(data); sum != chunk.Checksum {
 			return errors.New("checksum mismatch")
+		}
+		// The SHA is the chunk's identity: it is what resume journals and
+		// local reuse trust, so it has to hold for bytes that came off
+		// the network too.
+		if sum := sha1.Sum(data); !bytes.Equal(sum[:], chunk.SHA) {
+			return errors.New("sha1 mismatch")
 		}
 		return nil
 	})
