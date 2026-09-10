@@ -333,6 +333,131 @@ func (x *CMsgClientPICSAccessTokenResponse) GetAppDeniedTokens() []uint32 {
 	return nil
 }
 
+type CMsgClientPICSPrivateBetaRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Appid         *uint32                `protobuf:"varint,1,opt,name=appid" json:"appid,omitempty"`
+	AccessToken   *uint64                `protobuf:"varint,2,opt,name=access_token,json=accessToken" json:"access_token,omitempty"`
+	BetaName      *string                `protobuf:"bytes,3,opt,name=beta_name,json=betaName" json:"beta_name,omitempty"`
+	PasswordHash  []byte                 `protobuf:"bytes,4,opt,name=password_hash,json=passwordHash" json:"password_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CMsgClientPICSPrivateBetaRequest) Reset() {
+	*x = CMsgClientPICSPrivateBetaRequest{}
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CMsgClientPICSPrivateBetaRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CMsgClientPICSPrivateBetaRequest) ProtoMessage() {}
+
+func (x *CMsgClientPICSPrivateBetaRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CMsgClientPICSPrivateBetaRequest.ProtoReflect.Descriptor instead.
+func (*CMsgClientPICSPrivateBetaRequest) Descriptor() ([]byte, []int) {
+	return file_steammessages_clientserver_appinfo_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CMsgClientPICSPrivateBetaRequest) GetAppid() uint32 {
+	if x != nil && x.Appid != nil {
+		return *x.Appid
+	}
+	return 0
+}
+
+func (x *CMsgClientPICSPrivateBetaRequest) GetAccessToken() uint64 {
+	if x != nil && x.AccessToken != nil {
+		return *x.AccessToken
+	}
+	return 0
+}
+
+func (x *CMsgClientPICSPrivateBetaRequest) GetBetaName() string {
+	if x != nil && x.BetaName != nil {
+		return *x.BetaName
+	}
+	return ""
+}
+
+func (x *CMsgClientPICSPrivateBetaRequest) GetPasswordHash() []byte {
+	if x != nil {
+		return x.PasswordHash
+	}
+	return nil
+}
+
+type CMsgClientPICSPrivateBetaResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Eresult       *int32                 `protobuf:"varint,1,opt,name=eresult,def=2" json:"eresult,omitempty"`
+	DepotSection  []byte                 `protobuf:"bytes,2,opt,name=depot_section,json=depotSection" json:"depot_section,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+// Default values for CMsgClientPICSPrivateBetaResponse fields.
+const (
+	Default_CMsgClientPICSPrivateBetaResponse_Eresult = int32(2)
+)
+
+func (x *CMsgClientPICSPrivateBetaResponse) Reset() {
+	*x = CMsgClientPICSPrivateBetaResponse{}
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CMsgClientPICSPrivateBetaResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CMsgClientPICSPrivateBetaResponse) ProtoMessage() {}
+
+func (x *CMsgClientPICSPrivateBetaResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CMsgClientPICSPrivateBetaResponse.ProtoReflect.Descriptor instead.
+func (*CMsgClientPICSPrivateBetaResponse) Descriptor() ([]byte, []int) {
+	return file_steammessages_clientserver_appinfo_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CMsgClientPICSPrivateBetaResponse) GetEresult() int32 {
+	if x != nil && x.Eresult != nil {
+		return *x.Eresult
+	}
+	return Default_CMsgClientPICSPrivateBetaResponse_Eresult
+}
+
+func (x *CMsgClientPICSPrivateBetaResponse) GetDepotSection() []byte {
+	if x != nil {
+		return x.DepotSection
+	}
+	return nil
+}
+
 type CMsgClientPICSProductInfoRequest_AppInfo struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Appid              *uint32                `protobuf:"varint,1,opt,name=appid" json:"appid,omitempty"`
@@ -344,7 +469,7 @@ type CMsgClientPICSProductInfoRequest_AppInfo struct {
 
 func (x *CMsgClientPICSProductInfoRequest_AppInfo) Reset() {
 	*x = CMsgClientPICSProductInfoRequest_AppInfo{}
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[4]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -356,7 +481,7 @@ func (x *CMsgClientPICSProductInfoRequest_AppInfo) String() string {
 func (*CMsgClientPICSProductInfoRequest_AppInfo) ProtoMessage() {}
 
 func (x *CMsgClientPICSProductInfoRequest_AppInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[4]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -403,7 +528,7 @@ type CMsgClientPICSProductInfoRequest_PackageInfo struct {
 
 func (x *CMsgClientPICSProductInfoRequest_PackageInfo) Reset() {
 	*x = CMsgClientPICSProductInfoRequest_PackageInfo{}
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[5]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +540,7 @@ func (x *CMsgClientPICSProductInfoRequest_PackageInfo) String() string {
 func (*CMsgClientPICSProductInfoRequest_PackageInfo) ProtoMessage() {}
 
 func (x *CMsgClientPICSProductInfoRequest_PackageInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[5]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -460,7 +585,7 @@ type CMsgClientPICSProductInfoResponse_AppInfo struct {
 
 func (x *CMsgClientPICSProductInfoResponse_AppInfo) Reset() {
 	*x = CMsgClientPICSProductInfoResponse_AppInfo{}
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[6]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -472,7 +597,7 @@ func (x *CMsgClientPICSProductInfoResponse_AppInfo) String() string {
 func (*CMsgClientPICSProductInfoResponse_AppInfo) ProtoMessage() {}
 
 func (x *CMsgClientPICSProductInfoResponse_AppInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[6]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -551,7 +676,7 @@ type CMsgClientPICSProductInfoResponse_PackageInfo struct {
 
 func (x *CMsgClientPICSProductInfoResponse_PackageInfo) Reset() {
 	*x = CMsgClientPICSProductInfoResponse_PackageInfo{}
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[7]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -563,7 +688,7 @@ func (x *CMsgClientPICSProductInfoResponse_PackageInfo) String() string {
 func (*CMsgClientPICSProductInfoResponse_PackageInfo) ProtoMessage() {}
 
 func (x *CMsgClientPICSProductInfoResponse_PackageInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[7]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +756,7 @@ type CMsgClientPICSAccessTokenResponse_PackageToken struct {
 
 func (x *CMsgClientPICSAccessTokenResponse_PackageToken) Reset() {
 	*x = CMsgClientPICSAccessTokenResponse_PackageToken{}
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[8]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -643,7 +768,7 @@ func (x *CMsgClientPICSAccessTokenResponse_PackageToken) String() string {
 func (*CMsgClientPICSAccessTokenResponse_PackageToken) ProtoMessage() {}
 
 func (x *CMsgClientPICSAccessTokenResponse_PackageToken) ProtoReflect() protoreflect.Message {
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[8]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -683,7 +808,7 @@ type CMsgClientPICSAccessTokenResponse_AppToken struct {
 
 func (x *CMsgClientPICSAccessTokenResponse_AppToken) Reset() {
 	*x = CMsgClientPICSAccessTokenResponse_AppToken{}
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[9]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -695,7 +820,7 @@ func (x *CMsgClientPICSAccessTokenResponse_AppToken) String() string {
 func (*CMsgClientPICSAccessTokenResponse_AppToken) ProtoMessage() {}
 
 func (x *CMsgClientPICSAccessTokenResponse_AppToken) ProtoReflect() protoreflect.Message {
-	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[9]
+	mi := &file_steammessages_clientserver_appinfo_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -785,7 +910,15 @@ const file_steammessages_clientserver_appinfo_proto_rawDesc = "" +
 	"\faccess_token\x18\x02 \x01(\x04R\vaccessToken\x1aC\n" +
 	"\bAppToken\x12\x14\n" +
 	"\x05appid\x18\x01 \x01(\rR\x05appid\x12!\n" +
-	"\faccess_token\x18\x02 \x01(\x04R\vaccessTokenB\x05H\x01\x80\x01\x00"
+	"\faccess_token\x18\x02 \x01(\x04R\vaccessToken\"\x9d\x01\n" +
+	" CMsgClientPICSPrivateBetaRequest\x12\x14\n" +
+	"\x05appid\x18\x01 \x01(\rR\x05appid\x12!\n" +
+	"\faccess_token\x18\x02 \x01(\x04R\vaccessToken\x12\x1b\n" +
+	"\tbeta_name\x18\x03 \x01(\tR\bbetaName\x12#\n" +
+	"\rpassword_hash\x18\x04 \x01(\fR\fpasswordHash\"e\n" +
+	"!CMsgClientPICSPrivateBetaResponse\x12\x1b\n" +
+	"\aeresult\x18\x01 \x01(\x05:\x012R\aeresult\x12#\n" +
+	"\rdepot_section\x18\x02 \x01(\fR\fdepotSectionB\x05H\x01\x80\x01\x00"
 
 var (
 	file_steammessages_clientserver_appinfo_proto_rawDescOnce sync.Once
@@ -799,31 +932,33 @@ func file_steammessages_clientserver_appinfo_proto_rawDescGZIP() []byte {
 	return file_steammessages_clientserver_appinfo_proto_rawDescData
 }
 
-var file_steammessages_clientserver_appinfo_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_steammessages_clientserver_appinfo_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_steammessages_clientserver_appinfo_proto_goTypes = []any{
 	(*CMsgClientPICSProductInfoRequest)(nil),               // 0: CMsgClientPICSProductInfoRequest
 	(*CMsgClientPICSProductInfoResponse)(nil),              // 1: CMsgClientPICSProductInfoResponse
 	(*CMsgClientPICSAccessTokenRequest)(nil),               // 2: CMsgClientPICSAccessTokenRequest
 	(*CMsgClientPICSAccessTokenResponse)(nil),              // 3: CMsgClientPICSAccessTokenResponse
-	(*CMsgClientPICSProductInfoRequest_AppInfo)(nil),       // 4: CMsgClientPICSProductInfoRequest.AppInfo
-	(*CMsgClientPICSProductInfoRequest_PackageInfo)(nil),   // 5: CMsgClientPICSProductInfoRequest.PackageInfo
-	(*CMsgClientPICSProductInfoResponse_AppInfo)(nil),      // 6: CMsgClientPICSProductInfoResponse.AppInfo
-	(*CMsgClientPICSProductInfoResponse_PackageInfo)(nil),  // 7: CMsgClientPICSProductInfoResponse.PackageInfo
-	(*CMsgClientPICSAccessTokenResponse_PackageToken)(nil), // 8: CMsgClientPICSAccessTokenResponse.PackageToken
-	(*CMsgClientPICSAccessTokenResponse_AppToken)(nil),     // 9: CMsgClientPICSAccessTokenResponse.AppToken
+	(*CMsgClientPICSPrivateBetaRequest)(nil),               // 4: CMsgClientPICSPrivateBetaRequest
+	(*CMsgClientPICSPrivateBetaResponse)(nil),              // 5: CMsgClientPICSPrivateBetaResponse
+	(*CMsgClientPICSProductInfoRequest_AppInfo)(nil),       // 6: CMsgClientPICSProductInfoRequest.AppInfo
+	(*CMsgClientPICSProductInfoRequest_PackageInfo)(nil),   // 7: CMsgClientPICSProductInfoRequest.PackageInfo
+	(*CMsgClientPICSProductInfoResponse_AppInfo)(nil),      // 8: CMsgClientPICSProductInfoResponse.AppInfo
+	(*CMsgClientPICSProductInfoResponse_PackageInfo)(nil),  // 9: CMsgClientPICSProductInfoResponse.PackageInfo
+	(*CMsgClientPICSAccessTokenResponse_PackageToken)(nil), // 10: CMsgClientPICSAccessTokenResponse.PackageToken
+	(*CMsgClientPICSAccessTokenResponse_AppToken)(nil),     // 11: CMsgClientPICSAccessTokenResponse.AppToken
 }
 var file_steammessages_clientserver_appinfo_proto_depIdxs = []int32{
-	5, // 0: CMsgClientPICSProductInfoRequest.packages:type_name -> CMsgClientPICSProductInfoRequest.PackageInfo
-	4, // 1: CMsgClientPICSProductInfoRequest.apps:type_name -> CMsgClientPICSProductInfoRequest.AppInfo
-	6, // 2: CMsgClientPICSProductInfoResponse.apps:type_name -> CMsgClientPICSProductInfoResponse.AppInfo
-	7, // 3: CMsgClientPICSProductInfoResponse.packages:type_name -> CMsgClientPICSProductInfoResponse.PackageInfo
-	8, // 4: CMsgClientPICSAccessTokenResponse.package_access_tokens:type_name -> CMsgClientPICSAccessTokenResponse.PackageToken
-	9, // 5: CMsgClientPICSAccessTokenResponse.app_access_tokens:type_name -> CMsgClientPICSAccessTokenResponse.AppToken
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	7,  // 0: CMsgClientPICSProductInfoRequest.packages:type_name -> CMsgClientPICSProductInfoRequest.PackageInfo
+	6,  // 1: CMsgClientPICSProductInfoRequest.apps:type_name -> CMsgClientPICSProductInfoRequest.AppInfo
+	8,  // 2: CMsgClientPICSProductInfoResponse.apps:type_name -> CMsgClientPICSProductInfoResponse.AppInfo
+	9,  // 3: CMsgClientPICSProductInfoResponse.packages:type_name -> CMsgClientPICSProductInfoResponse.PackageInfo
+	10, // 4: CMsgClientPICSAccessTokenResponse.package_access_tokens:type_name -> CMsgClientPICSAccessTokenResponse.PackageToken
+	11, // 5: CMsgClientPICSAccessTokenResponse.app_access_tokens:type_name -> CMsgClientPICSAccessTokenResponse.AppToken
+	6,  // [6:6] is the sub-list for method output_type
+	6,  // [6:6] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_steammessages_clientserver_appinfo_proto_init() }
@@ -837,7 +972,7 @@ func file_steammessages_clientserver_appinfo_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_steammessages_clientserver_appinfo_proto_rawDesc), len(file_steammessages_clientserver_appinfo_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

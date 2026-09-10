@@ -33,8 +33,11 @@ type Session struct {
 
 	mu        sync.Mutex
 	depotKeys map[uint32][]byte
-	keyFile   string
-	cdnClient *cdn.Client
+	// branchKeys caches CheckAppBetaPassword answers per app and password.
+	// Steam rate limits that call, and a sync asks once per depot.
+	branchKeys map[string]map[string]string
+	keyFile    string
+	cdnClient  *cdn.Client
 }
 
 type Options struct {
@@ -227,6 +230,53 @@ func (s *Session) CDN(ctx context.Context) (*cdn.Client, error) {
 	return s.cdnClient, nil
 }
 
+// UnlockBranch makes a password-protected branch that appinfo does not
+// list visible on app. Branches already present are left alone; older
+// password branches appear in appinfo with encrypted manifest ids and
+// ResolveManifest handles those on its own.
+func (s *Session) UnlockBranch(ctx context.Context, app *appinfo.App, branch, password string) error {
+	if app.Branch(branch) != nil {
+		return nil
+	}
+	if password == "" {
+		return fmt.Errorf("app %d has no branch %q; if it is private, give its password", app.ID, branch)
+	}
+	key, err := s.branchKey(ctx, app.ID, branch, password)
+	if err != nil {
+		return err
+	}
+	return appinfo.PrivateBeta(ctx, s.CM, app, branch, key)
+}
+
+func (s *Session) branchKey(ctx context.Context, appID uint32, branch, password string) ([]byte, error) {
+	cacheKey := fmt.Sprintf("%d\x00%s", appID, password)
+	s.mu.Lock()
+	keys, cached := s.branchKeys[cacheKey]
+	s.mu.Unlock()
+	if !cached {
+		var err error
+		keys, err = appinfo.BranchPasswords(ctx, s.CM, appID, password)
+		if err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		if s.branchKeys == nil {
+			s.branchKeys = map[string]map[string]string{}
+		}
+		s.branchKeys[cacheKey] = keys
+		s.mu.Unlock()
+	}
+	keyHex, ok := lookupFold(keys, branch)
+	if !ok {
+		return nil, fmt.Errorf("password does not unlock branch %q", branch)
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return nil, fmt.Errorf("branch key: %w", err)
+	}
+	return key, nil
+}
+
 // ResolveManifest returns the manifest gid for a depot on a branch,
 // decrypting it with the branch password when the branch is private.
 func (s *Session) ResolveManifest(ctx context.Context, app *appinfo.App, depot *appinfo.Depot, branch, password string) (uint64, error) {
@@ -235,22 +285,20 @@ func (s *Session) ResolveManifest(ctx context.Context, app *appinfo.App, depot *
 	}
 	enc, ok := lookupFold(depot.EncryptedManifests, branch)
 	if !ok {
+		if err := s.UnlockBranch(ctx, app, branch, password); err != nil {
+			return 0, err
+		}
+		if m, ok := lookupFold(depot.Manifests, branch); ok {
+			return m.GID, nil
+		}
 		return 0, fmt.Errorf("depot %d has no manifest on branch %q", depot.ID, branch)
 	}
 	if password == "" {
 		return 0, fmt.Errorf("branch %q needs a password", branch)
 	}
-	keys, err := appinfo.BranchPasswords(ctx, s.CM, app.ID, password)
+	key, err := s.branchKey(ctx, app.ID, branch, password)
 	if err != nil {
 		return 0, err
-	}
-	keyHex, ok := lookupFold(keys, branch)
-	if !ok {
-		return 0, fmt.Errorf("password does not unlock branch %q", branch)
-	}
-	key, err := hex.DecodeString(keyHex)
-	if err != nil {
-		return 0, fmt.Errorf("branch key: %w", err)
 	}
 	cipher, err := hex.DecodeString(enc)
 	if err != nil {

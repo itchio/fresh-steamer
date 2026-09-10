@@ -24,6 +24,7 @@ const (
 	emsgPICSProductInfoRequest = 8903
 	emsgPICSAccessTokenRequest = 8905
 	emsgCheckAppBetaPassword   = 5450
+	emsgPICSPrivateBeta        = 8907
 )
 
 type App struct {
@@ -239,13 +240,23 @@ func parse(n *vdf.Node) *App {
 		OSArch: n.Path("common", "osarch").String(),
 		Raw:    n,
 	}
-	depots := n.Get("depots")
+	app.mergeDepots(n.Get("depots"))
+	return app
+}
+
+// mergeDepots folds a depots section into the app. Appinfo carries one;
+// a private branch's section arrives separately and adds a branch plus
+// manifests to depots that are already known.
+func (app *App) mergeDepots(depots *vdf.Node) {
 	if depots == nil {
-		return app
+		return
 	}
 	for _, d := range depots.Children {
 		if strings.EqualFold(d.Key, "branches") {
 			for _, b := range d.Children {
+				if app.Branch(b.Key) != nil {
+					continue
+				}
 				app.Branches = append(app.Branches, &Branch{
 					Name:             b.Key,
 					BuildID:          b.Get("buildid").Uint32(),
@@ -264,17 +275,21 @@ func parse(n *vdf.Node) *App {
 		if id == 0 {
 			continue
 		}
-		dep := &Depot{
-			ID:                 id,
-			Name:               d.Get("name").String(),
-			Language:           d.Path("config", "language").String(),
-			OSArch:             d.Path("config", "osarch").String(),
-			DLCAppID:           d.Get("dlcappid").Uint32(),
-			SharedFromApp:      d.Get("depotfromapp").Uint32(),
-			Manifests:          map[string]*Manifest{},
-			EncryptedManifests: map[string]string{},
+		dep := app.Depot(id)
+		if dep == nil {
+			dep = &Depot{
+				ID:                 id,
+				Name:               d.Get("name").String(),
+				Language:           d.Path("config", "language").String(),
+				OSArch:             d.Path("config", "osarch").String(),
+				DLCAppID:           d.Get("dlcappid").Uint32(),
+				SharedFromApp:      d.Get("depotfromapp").Uint32(),
+				Manifests:          map[string]*Manifest{},
+				EncryptedManifests: map[string]string{},
+			}
+			dep.OSList = splitList(d.Path("config", "oslist").String())
+			app.Depots = append(app.Depots, dep)
 		}
-		dep.OSList = splitList(d.Path("config", "oslist").String())
 		if m := d.Get("manifests"); m != nil {
 			for _, br := range m.Children {
 				if br.IsLeaf() {
@@ -298,10 +313,8 @@ func parse(n *vdf.Node) *App {
 				}
 			}
 		}
-		app.Depots = append(app.Depots, dep)
 	}
 	sort.Slice(app.Depots, func(i, j int) bool { return app.Depots[i].ID < app.Depots[j].ID })
-	return app
 }
 
 func splitList(s string) []string {
@@ -348,4 +361,33 @@ func BranchPasswords(ctx context.Context, c *cm.Client, appID uint32, password s
 		out[b.GetBetaname()] = b.GetBetapassword()
 	}
 	return out, nil
+}
+
+// PrivateBeta fetches the depots section for a branch that appinfo leaves
+// out entirely, which is how Steam publishes private branches created
+// since 2024. key is the branch key BranchPasswords returned for it. The
+// result is merged into app, after which the branch resolves like any
+// other.
+func PrivateBeta(ctx context.Context, c *cm.Client, app *App, branch string, key []byte) error {
+	pkt, err := c.Request(ctx, emsgPICSPrivateBeta, &pb.CMsgClientPICSPrivateBetaRequest{
+		Appid:        proto.Uint32(app.ID),
+		BetaName:     proto.String(branch),
+		PasswordHash: key,
+	})
+	if err != nil {
+		return err
+	}
+	var res pb.CMsgClientPICSPrivateBetaResponse
+	if err := pkt.Unmarshal(&res); err != nil {
+		return err
+	}
+	if res.GetEresult() != 1 {
+		return &cm.EResultError{EResult: res.GetEresult(), Context: fmt.Sprintf("private branch %q", branch)}
+	}
+	n, err := vdf.Parse(res.GetDepotSection())
+	if err != nil {
+		return fmt.Errorf("private branch %q depots: %w", branch, err)
+	}
+	app.mergeDepots(n.Get("privatedepots"))
+	return nil
 }

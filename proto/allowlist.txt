@@ -28,6 +28,8 @@ CMsgClientPICSAccessTokenRequest
 CMsgClientPICSAccessTokenResponse
 CMsgClientPICSProductInfoRequest
 CMsgClientPICSProductInfoResponse
+CMsgClientPICSPrivateBetaRequest
+CMsgClientPICSPrivateBetaResponse
 
 # steammessages_auth.steamclient.proto
 CAuthentication_DeviceDetails
